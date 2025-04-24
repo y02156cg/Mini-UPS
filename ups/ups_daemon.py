@@ -10,7 +10,7 @@ import os
 
 # 导入自定义模块
 from world_connection import WorldConnection
-from amazon_communication import AmazonCommunication
+from ups.amazon_communication import AmazonCommunication
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

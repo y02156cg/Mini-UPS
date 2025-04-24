@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  ups-db:
+    image: postgres:13
+    container_name: ups-db
+    restart: always
+    environment:
+      POSTGRES_DB: ups_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - ups_db_data:/var/lib/postgresql/data
+      - ./db/UPS_db.sql:/docker-entrypoint-initdb.d/init.sql
+
+  ups:
+    build:
+      context: .
+    container_name: ups-server
+    depends_on:
+      - ups-db
+    environment:
+      POSTGRES_DB: ups_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      DB_HOST: ups-db
+      DB_PORT: 5432
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ups:/app
+
+volumes:
+  ups_db_data:

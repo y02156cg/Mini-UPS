@@ -34,7 +34,7 @@ class WorldConnection:
 
             response = self._receive_message(ups_pb2.UConnected())
 
-            if response.result = "connected!":
+            if response.result == "connected!":
                 self.world_id = response.worldid
                 self.connected = True
                 print(f"Connected to world {self.world_id}")
