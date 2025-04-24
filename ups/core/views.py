@@ -1,3 +1,6 @@
+from django.shortcuts import render
+
+# Create your views here.
 from django.shortcuts import render, redirect, get_list_or_404
 from django.http import JsonResponse
 from django.contrib.auth import authenticate, login, logout
@@ -5,6 +8,9 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
 from django.contrib import messages
 from django.conf import settings
+from django.contrib.auth.decorators import login_required
+from django.shortcuts import render, redirect
+from django.http import JsonResponse
 import json
 import psycopg2
 import psycopg2.extras

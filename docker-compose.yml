@@ -5,15 +5,18 @@ services:
     image: postgres:13
     container_name: ups-db
     restart: always
+    env_file: .env
     environment:
-      POSTGRES_DB: ups_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
       - ups_db_data:/var/lib/postgresql/data
       - ./db/UPS_db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - ups-net
 
   ups:
     build:
@@ -21,16 +24,27 @@ services:
     container_name: ups-server
     depends_on:
       - ups-db
+    restart: always
+    env_file: .env
     environment:
-      POSTGRES_DB: ups_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres_password
-      DB_HOST: ups-db
-      DB_PORT: 5432
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      WORLD_HOST: ${WORLD_HOST}
+      WORLD_PORT: ${WORLD_PORT}
+      AMAZON_URL: ${AMAZON_URL}
     ports:
       - "8000:8000"
     volumes:
       - ./ups:/app
+    networks:
+      - ups-net
 
 volumes:
   ups_db_data:
+
+networks:
+  ups-net:
+    external: true
