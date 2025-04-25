@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Dashboard - UPS Mini System</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+
+        th, td {
+            border: 1px solid #444;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f9f9f9;
+        }
+
+        h1, h2 {
+            margin-top: 20px;
+        }
+
+        a {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Admin Dashboard</h1>
+
+    <p><a href="{% url 'home' %}">Home</a></p>
+
+    <h2>Trucks</h2>
+    {% if trucks %}
+        <table>
+            <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>X</th>
+                <th>Y</th>
+            </tr>
+            {% for truck in trucks %}
+                <tr>
+                    <td>{{ truck.id }}</td>
+                    <td>{{ truck.status }}</td>
+                    <td>{{ truck.x }}</td>
+                    <td>{{ truck.y }}</td>
+                </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No trucks found.</p>
+    {% endif %}
+
+    <h2>All Packages (Latest 50)</h2>
+    {% if packages %}
+        <table>
+            <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Destination</th>
+                <th>Created</th>
+                <th>Truck</th>
+                <th>Owner</th>
+            </tr>
+            {% for p in packages %}
+                <tr>
+                    <td>{{ p.id }}</td>
+                    <td>{{ p.status }}</td>
+                    <td>({{ p.destination_x }}, {{ p.destination_y }})</td>
+                    <td>{{ p.created_at }}</td>
+                    <td>{{ p.truck_id|default:"N/A" }}</td>
+                    <td>{{ p.owner|default:"N/A" }}</td>
+                </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No packages found.</p>
+    {% endif %}
+</body>
+</html>

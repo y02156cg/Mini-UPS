@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>UPS Mini System - Home</title>
+</head>
+<body>
+    <h1>Welcome to the UPS Mini System</h1>
+
+    {% if world_id %}
+        <p>Connected to World ID: <strong>{{ world_id }}</strong></p>
+    {% else %}
+        <p><strong>⚠ Not connected to any world</strong></p>
+    {% endif %}
+
+    {% if is_authenticated %}
+        <p>You are logged in.</p>
+        <a href="{% url 'dashboard' %}">Go to Dashboard</a> |
+        <a href="{% url 'logout' %}">Logout</a>
+    {% else %}
+        <p>You are not logged in.</p>
+        <a href="{% url 'login' %}">Login</a> |
+        <a href="{% url 'register' %}">Register</a>
+    {% endif %}
+</body>
+</html>

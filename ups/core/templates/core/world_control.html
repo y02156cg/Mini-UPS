@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>World Control - UPS Mini System</title>
+    <style>
+        form {
+            margin-bottom: 20px;
+        }
+
+        input[type="number"] {
+            width: 100px;
+            padding: 6px;
+        }
+
+        button {
+            padding: 6px 12px;
+        }
+
+        .info {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>World Control Panel</h1>
+
+    <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="create_world">
+        <button type="submit">Create New World</button>
+    </form>
+
+    <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="set_speed">
+        <label for="speed">Set Simulation Speed (1–1000):</label>
+        <input type="number" id="speed" name="speed" min="1" max="1000" required>
+        <button type="submit">Apply</button>
+    </form>
+
+    {% if world_info %}
+    <div class="info">
+        <h2>Current World State</h2>
+        <p><strong>World ID:</strong> {{ world_info.world_id }}</p>
+        <p><strong>Simulation Speed:</strong> {{ world_info.sim_speed }}</p>
+        <p><strong>Connected At:</strong> {{ world_info.connected_at }}</p>
+    </div>
+    {% else %}
+        <p>No active world session.</p>
+    {% endif %}
+
+    <p><a href="{% url 'admin_dashboard' %}">← Back to Admin Dashboard</a></p>
+</body>
+</html>

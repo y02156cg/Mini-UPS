@@ -10,6 +10,8 @@ import sys
 
 # Import generated Protocol Buffer classes
 import world_ups_1_pb2 as ups_pb2
+from core.models import *
+from django.db import transaction
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -145,27 +147,42 @@ class WorldConnection:
             world_id: World ID
         """
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
+            with transaction.atomic():
                 for truck in trucks:
-                    cursor.execute(
-                        """
-                        INSERT INTO trucks (id, status, x, y, world_id) 
-                        VALUES (%s, 'idle', %s, %s, %s)
-                        ON CONFLICT (id) DO UPDATE 
-                        SET status = 'idle', x = %s, y = %s, world_id = %s
-                        """,
-                        (truck['id'], truck['x'], truck['y'], world_id, 
-                         truck['x'], truck['y'], world_id)
+                    Truck.objects.update_or_create(
+                        id=truck['id'],
+                        defaults={
+                            'status': 'idle',
+                            'x': truck['x'],
+                            'y': truck['y'],
+                            'world_id': world_id,
+                        }
                     )
-                conn.commit()
             logger.info(f"Saved {len(trucks)} trucks to database for world {world_id}")
         except Exception as e:
             logger.error(f"Database error in save_trucks_to_db: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            self.db_pool.putconn(conn)
+        # try:
+        #     conn = self.db_pool.getconn()
+        #     with conn.cursor() as cursor:
+        #         for truck in trucks:
+        #             cursor.execute(
+        #                 """
+        #                 INSERT INTO trucks (id, status, x, y, world_id) 
+        #                 VALUES (%s, 'idle', %s, %s, %s)
+        #                 ON CONFLICT (id) DO UPDATE 
+        #                 SET status = 'idle', x = %s, y = %s, world_id = %s
+        #                 """,
+        #                 (truck['id'], truck['x'], truck['y'], world_id, 
+        #                  truck['x'], truck['y'], world_id)
+        #             )
+        #         conn.commit()
+        #     logger.info(f"Saved {len(trucks)} trucks to database for world {world_id}")
+        # except Exception as e:
+        #     logger.error(f"Database error in save_trucks_to_db: {e}")
+        #     if conn:
+        #         conn.rollback()
+        # finally:
+        #     self.db_pool.putconn(conn)
     
     def _get_next_seq_num(self):
         """Get the next sequence number for commands"""
@@ -935,14 +952,14 @@ class WorldConnection:
                             # No specific recovery needed for query errors
                             logger.info(f"No recovery needed for query error with seqnum {error.originseqnum}")
                     
-                    # Notify admin about the error
-                    cursor.execute(
-                        """
-                        INSERT INTO admin_alerts (alert_type, message, created_at)
-                        VALUES ('world_error', %s, NOW())
-                        """,
-                        (f"World error: {error.err} (Seq: {error.originseqnum})",)
-                    )
+                    # # Notify admin about the error
+                    # cursor.execute(
+                    #     """
+                    #     INSERT INTO admin_alerts (alert_type, message, created_at)
+                    #     VALUES ('world_error', %s, NOW())
+                    #     """,
+                    #     (f"World error: {error.err} (Seq: {error.originseqnum})",)
+                    # )
                     
                     # Schedule automatic retry if needed and possible
                     if hasattr(error, 'retry') and error.retry:

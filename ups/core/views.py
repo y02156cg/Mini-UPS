@@ -4,13 +4,13 @@ from django.shortcuts import render
 from django.shortcuts import render, redirect, get_list_or_404
 from django.http import JsonResponse
 from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
+
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
 from django.contrib import messages
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.shortcuts import render, redirect
-from django.http import JsonResponse
 import json
 import psycopg2
 import psycopg2.extras
@@ -55,7 +55,7 @@ def home(request):
         'world_id': world_id,
         'is_authenticated': request.user.is_authenticated
     }
-    return render(request, 'ups/home.html', context)
+    return render(request, 'core/home.html', context)
 
 def login_view(request):
     if request.method == 'POST':
@@ -68,8 +68,7 @@ def login_view(request):
             return redirect('dashboard')
         else:
             messages.error(request, 'Invalid username or password')
-
-    return render(request, 'ups/login.html')
+    return render(request, 'core/login.html')
 
 def logout_view(request):
     logout(request)
@@ -83,35 +82,44 @@ def register(request):
 
         if not username or not password:
             messages.error(request, 'Username and password are required')
-            return render(request, 'ups/register.html')
+            return render(request, 'core/register.html')
         
-        try:
-            conn = get_db_connection()
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
-                if cursor.fetchone():
-                    messages.error(request, 'Username already exists')
-                    return render(request, 'ups/register.html')
+        if User.objects.filter(username=username).exists():
+            messages.error(request, 'Username already exists')
+            return render(request, 'core/register.html')
+
+        user = User.objects.create_user(username=username, password=password, email=email)
+        user.save()
+
+        login(request, user)
+        return redirect('dashboard')
+        # try:
+        #     conn = get_db_connection()
+        #     with conn.cursor() as cursor:
+        #         cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+        #         if cursor.fetchone():
+        #             messages.error(request, 'Username already exists')
+        #             return render(request, 'core/register.html')
                 
-                cursor.execute(
-                    "INSERT INTO users (username, password_hash, email) VALUES (%s, %s, %s) RETURNING id",
-                    (username, password, email)
-                )
-                user_id = cursor.fetchone()[0]
-                conn.commit()
+        #         cursor.execute(
+        #             "INSERT INTO users (username, password_hash, email) VALUES (%s, %s, %s) RETURNING id",
+        #             (username, password, email)
+        #         )
+        #         user_id = cursor.fetchone()[0]
+        #         conn.commit()
 
-                user = authenticate(request, username=username, password=password)
-                if user is not None:
-                    login(request, user)
-                    return redirect('dashboard')
-        except Exception as e:
-            print(f"Error registering user: {e}")
-            messages.error(request, 'An error occurred during registration')
-        finally:
-            if conn:
-                conn.close
+        #         user = authenticate(request, username=username, password=password)
+        #         if user is not None:
+        #             login(request, user)
+        #             return redirect('dashboard')
+        # except Exception as e:
+        #     print(f"Error registering user: {e}")
+        #     messages.error(request, 'An error occurred during registration')
+        # finally:
+        #     if conn:
+        #         conn.close
 
-    return render(request, 'ups/register.html')
+    return render(request, 'core/register.html')
 
 @login_required
 def dashboard(request):
@@ -125,8 +133,8 @@ def dashboard(request):
             cursor.execute(
                 """
                 SELECT p.id, p.status, p.destination_x, p.destination_y, p.created_at, t.id as truck_id, t.status as truck_status
-                FROM packages p
-                LEFT JOIN trucks t ON p.truck_id = t.id
+                FROM packages p 
+                LEFT JOIN trucks t ON p.truck_id = t.id 
                 WHERE p.user_id = %s
                 ORDER BY p.created_at DESC
                 """,
@@ -157,7 +165,7 @@ def dashboard(request):
         'packages': packages,
         'notifications': notifications
     }
-    return render(request, 'ups/dashboard.html', context)
+    return render(request, 'core/dashboard.html', context)
 
 def track_package(request):
     """Track a package by tracking number"""
@@ -165,7 +173,7 @@ def track_package(request):
         tracking_number = request.POST.get('tracking_number')
         return redirect('package_details', tracking_number=tracking_number)
     
-    return render(request, 'ups/track.html')
+    return render(request, 'core/track.html')
 
 def package_details(request, tracking_number):
     package = None
@@ -179,9 +187,9 @@ def package_details(request, tracking_number):
                 """
                 SELECT p.id, p.status, p.destination_x, p.destination_y, p.created_at, p.updated_at,
                        t.id as truck_id, t.status as truck_status, t.x as truck_x, p.user_id, u.username
-                FROM packages p
-                LEFT JOIN trucks t ON p.truck_id = t.id
-                LEFT JOIN users u ON p.user_id = u.id
+                FROM packages p 
+                LEFT JOIN trucks t ON p.truck_id = t.id 
+                LEFT JOIN auth_user u ON p.user_id = u.id
                 WHERE p.id = %s
                 """ ,
                 (tracking_number,)
@@ -219,7 +227,7 @@ def package_details(request, tracking_number):
         'can_redirect': can_redirect,
         'is_owner': request.user.is_authenticated and request.user.id == package['user_id']
     }
-    return render(request, 'ups/package_details.html', context)
+    return render(request, 'core/package_details.html', context)
 
 @login_required
 def redirect_package(request, tracking_number):
@@ -272,7 +280,7 @@ def redirect_package(request, tracking_number):
                         VALUES ('redirect_package', %s)
                         """,
                         (json.dumps({
-                            'trucking_number': tracking_number,
+                            'tracking_number': tracking_number,
                             'truck_id': package['truck_id'],
                             'x': new_x,
                             'y': new_y
@@ -290,7 +298,7 @@ def redirect_package(request, tracking_number):
 
         return redirect('package_details', tracking_number=tracking_number)
     
-    return render(request, 'ups/redirect_package.html', {'tracking_number': tracking_number})
+    return render(request, 'core/redirect_package.html', {'tracking_number': tracking_number})
 
 @login_required
 def admin_dashboard(request):
@@ -311,7 +319,7 @@ def admin_dashboard(request):
                        t.id as truck_id, u.username as owner
                 FROM packages p
                 LEFT JOIN trucks t ON p.truck_id = t.id
-                LEFT JOIN users u ON p.user_id = u.id
+                LEFT JOIN auth_user u ON p.user_id = u.id
                 ORDER BY p.created_at DESC
                 LIMIT 50
                 """
@@ -328,7 +336,7 @@ def admin_dashboard(request):
         'trucks': trucks,
         'packages': packages
     }
-    return render(request, 'ups/admin_dashboard.html', context)
+    return render(request, 'core/admin_dashboard.html', context)
 
 @csrf_exempt
 def amazon_api(request):
@@ -354,7 +362,7 @@ def amazon_api(request):
                 with conn.cursor() as cursor:
                     cursor.execute(
                         """
-                        INSERT INTO packages,
+                        INSERT INTO packages
                         (id, user_id, warehouse_id, status, destination_x, destination_y, description)
                         VALUES (%s, %s, %s, 'waiting_for_pickup', %s, %s, %s)
                         """,
@@ -652,5 +660,5 @@ def world_control(request):
     context = {
         'world_info': world_info
     }
-    return render(request, 'ups/world_control.html', context)
+    return render(request, 'core/world_control.html', context)
 

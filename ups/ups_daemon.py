@@ -11,6 +11,7 @@ import os
 # 导入自定义模块
 from world_connection import WorldConnection
 from amazon_communication import AmazonCommunication
+from core.models import *
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -195,7 +196,7 @@ class UPSDaemon:
             logger.info("启动UPS守护进程...")
             
             # 初始化数据库
-            self.initialize_database()
+            # self.initialize_database()
             
             # 创建WorldConnection
             self.world_connection = WorldConnection(
@@ -243,12 +244,18 @@ class UPSDaemon:
                 # 创建世界状态记录
                 conn = self.db_pool.getconn()
                 try:
-                    with conn.cursor() as cursor:
-                        cursor.execute(
-                            "INSERT INTO world_state (world_id) VALUES (%s) ON CONFLICT DO NOTHING",
-                            (self.world_id,)
-                        )
-                        conn.commit()
+                    # with conn.cursor() as cursor:
+                    #     cursor.execute(
+                    #         "INSERT INTO world_state (world_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                    #         (self.world_id,)
+                    #     )
+                    #     conn.commit()
+                    WorldState.objects.get_or_create(
+                        world_id=self.world_id,
+                        defaults={
+                            "sim_speed": 100
+                        }
+                    )
                 except Exception as e:
                     logger.error(f"创建世界状态记录时出错: {e}")
                     if conn:
@@ -441,13 +448,13 @@ class UPSDaemon:
         try:
             conn = self.db_pool.getconn()
             with conn.cursor() as cursor:
-                # 清理旧命令日志
-                cursor.execute(
-                    """
-                    DELETE FROM command_logs 
-                    WHERE created_at < NOW() - INTERVAL '7 days'
-                    """
-                )
+                # # 清理旧命令日志
+                # cursor.execute(
+                #     """
+                #     DELETE FROM command_logs 
+                #     WHERE created_at < NOW() - INTERVAL '7 days'
+                #     """
+                # )
                 
                 # 清理旧错误日志
                 cursor.execute(

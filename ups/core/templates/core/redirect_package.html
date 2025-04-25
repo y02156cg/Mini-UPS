@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Redirect Package - UPS Mini System</title>
+    <style>
+        form {
+            margin-top: 20px;
+        }
+
+        label {
+            display: block;
+            margin-top: 10px;
+        }
+
+        input[type="number"] {
+            width: 100px;
+            padding: 6px;
+        }
+
+        button {
+            margin-top: 15px;
+            padding: 6px 12px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Redirect Package</h1>
+
+    <p><strong>Tracking Number:</strong> {{ tracking_number }}</p>
+
+    <form method="post">
+        {% csrf_token %}
+        <label for="new_x">New X Coordinate:</label>
+        <input type="number" id="new_x" name="new_x" required>
+
+        <label for="new_y">New Y Coordinate:</label>
+        <input type="number" id="new_y" name="new_y" required>
+
+        <button type="submit">Submit Redirect</button>
+    </form>
+
+    <p><a href="{% url 'package_details' tracking_number=tracking_number %}">Back to Package Details</a></p>
+</body>
+</html>

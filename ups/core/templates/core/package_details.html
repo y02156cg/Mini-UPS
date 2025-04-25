@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Package Details - UPS Mini System</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 16px;
+        }
+
+        th, td {
+            border: 1px solid #444;
+            padding: 8px;
+        }
+
+        th {
+            background-color: #f0f0f0;
+        }
+
+        .info {
+            margin-bottom: 20px;
+        }
+
+        .actions {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Package Details</h1>
+
+    {% if package %}
+    <div class="info">
+        <p><strong>Tracking Number:</strong> {{ package.id }}</p>
+        <p><strong>Status:</strong> {{ package.status }}</p>
+        <p><strong>Owner:</strong> {{ package.username }}</p>
+        <p><strong>Destination:</strong> ({{ package.destination_x }}, {{ package.destination_y }})</p>
+        <p><strong>Created At:</strong> {{ package.created_at }}</p>
+        <p><strong>Updated At:</strong> {{ package.updated_at }}</p>
+
+        {% if package.truck_id %}
+            <p><strong>Truck ID:</strong> {{ package.truck_id }}</p>
+            <p><strong>Truck Status:</strong> {{ package.truck_status }}</p>
+            <p><strong>Truck Location:</strong> ({{ package.truck_x }}, {{ package.truck_y }})</p>
+        {% endif %}
+    </div>
+    {% else %}
+        <p>Package not found.</p>
+    {% endif %}
+
+    <h2>Items in Package</h2>
+    {% if items %}
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>Description</th>
+                <th>Quantity</th>
+            </tr>
+            {% for item in items %}
+                <tr>
+                    <td>{{ item.name }}</td>
+                    <td>{{ item.description }}</td>
+                    <td>{{ item.quantity }}</td>
+                </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>No items found for this package.</p>
+    {% endif %}
+
+    {% if can_redirect and is_owner %}
+        <div class="actions">
+            <p><a href="{% url 'redirect_package' tracking_number=package.id %}">Redirect Package</a></p>
+        </div>
+    {% endif %}
+
+    <p><a href="{% url 'dashboard' %}">Back to Dashboard</a></p>
+</body>
+</html>

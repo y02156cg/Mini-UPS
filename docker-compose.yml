@@ -15,8 +15,8 @@ services:
     volumes:
       - ups_db_data:/var/lib/postgresql/data
       - ./db/UPS_db.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - ups-net
+    # networks:
+    #   - ups-net
 
   ups:
     build:
@@ -39,12 +39,21 @@ services:
       - "8000:8000"
     volumes:
       - ./ups:/app
-    networks:
-      - ups-net
+    # networks:
+    #   - ups-net
+    command:  >
+      sh -c "
+        echo '🚀 Starting Django: running makemigrations...' &&
+        python manage.py makemigrations core &&
+        echo '✅ makemigrations done. Now migrating...' &&
+        python manage.py migrate &&
+        echo '✅ migrate done. Starting Django server...' &&
+        python manage.py runserver 0.0.0.0:8000
+      "
 
 volumes:
   ups_db_data:
 
-networks:
-  ups-net:
-    external: true
+# networks:
+#   ups-net:
+#     external: true

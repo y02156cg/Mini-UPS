@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Your Dashboard - UPS Mini System</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+
+        th, td {
+            border: 1px solid #444;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        h1, h2 {
+            margin-top: 20px;
+        }
+
+        a {
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Your Dashboard</h1>
+
+    <p><a href="{% url 'logout' %}">Logout</a> | <a href="{% url 'home' %}">Home</a></p>
+
+    <h2>Notifications</h2>
+    {% if notifications %}
+        <ul>
+        {% for note in notifications %}
+            <li>{{ note.message }} ({{ note.created_at }})</li>
+        {% endfor %}
+        </ul>
+    {% else %}
+        <p>No new notifications.</p>
+    {% endif %}
+
+    <h2>Your Packages</h2>
+    {% if packages %}
+        <table>
+            <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Destination</th>
+                <th>Created</th>
+                <th>Truck</th>
+                <th>Truck Status</th>
+                <th>Details</th>
+            </tr>
+            {% for p in packages %}
+                <tr>
+                    <td>{{ p.id }}</td>
+                    <td>{{ p.status }}</td>
+                    <td>({{ p.destination_x }}, {{ p.destination_y }})</td>
+                    <td>{{ p.created_at }}</td>
+                    <td>{{ p.truck_id|default:"N/A" }}</td>
+                    <td>{{ p.truck_status|default:"N/A" }}</td>
+                    <td><a href="{% url 'package_details' tracking_number=p.id %}">View</a></td>
+                </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p>You don’t have any packages yet.</p>
+    {% endif %}
+</body>
+</html>

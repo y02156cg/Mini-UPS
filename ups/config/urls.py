@@ -32,7 +32,7 @@ urlpatterns = [
     path('admin/dashboard/', views.admin_dashboard, name='admin_dashboard'),
     path('admin/world/', views.world_control, name='world_control'),
     
-    path('api/amazon/', views.amazon_api, name='amazon_api'),
+    path('api/amazon/', views.amazon_api, name='amazon_api'),  #
     path('api/truck/<int:truck_id>/', views.truck_status_api, name='truck_status_api'),
     path('api/package/<str:tracking_number>/', views.package_status_api, name='package_status_api'),
 ]

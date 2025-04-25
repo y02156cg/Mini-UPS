@@ -10,6 +10,9 @@ from psycopg2 import pool
 import psycopg2.pool
 from datetime import datetime, timezone
 import os
+from django.contrib.auth.hashers import make_password
+from core.models import *
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('amazon_comm') # amazon communication logger name
@@ -146,7 +149,7 @@ class AmazonCommunication:
 
             # Send the request POST message to Amazon
             response = requests.post(
-                f"{self.amazon_url}/api/ups", # send request to this url
+                f"{self.amazon_url}/api/ups/", # send request to this url
                 json=message,
                 headers={'Content-Type': 'application/json'},
                 timeout=10
@@ -309,6 +312,40 @@ class AmazonCommunication:
             conn = self.db_pool.getconn()
             try:
                 with conn.cursor() as cursor:
+                    # Ensure warehouse exists in warehouses table
+                    cursor.execute(
+                        "SELECT 1 FROM warehouses WHERE id = %s",
+                        (warehouse_id,)
+                    )
+                    if cursor.fetchone() is None:
+                    # If not exist, insert it with dummy coordinates (or assume provided in request)
+                        warehouse_x = request.get('destination_x', 0)  # default fallback
+                        warehouse_y = request.get('destination_y', 0)
+                        world_id = request.get('world_id', 1)  # fallback or load from config if needed
+
+                        cursor.execute(
+                            """
+                            INSERT INTO warehouses (id, x, y, world_id)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (id) DO NOTHING
+                            """,
+                            (warehouse_id, destination_x, destination_y, world_id)
+                        )
+
+                    if user_id:
+                        cursor.execute("SELECT 1 FROM auth_user WHERE id = %s", (user_id,))
+                        if cursor.fetchone() is None:
+                            # Default password is "1234"
+                            default_password_hash = make_password("1234")
+                            cursor.execute(
+                                """
+                                INSERT INTO auth_user (id, username, password, email, is_active, is_staff, is_superuser, date_joined)
+                                VALUES (%s, %s, %s, %s, TRUE, FALSE, FALSE, NOW())
+                                ON CONFLICT (id) DO NOTHING
+                                """,
+                                (user_id, f"user_{user_id}", default_password_hash, f"user_{user_id}@example.com")
+                            )
+
                     # Create package
                     cursor.execute(
                         """
