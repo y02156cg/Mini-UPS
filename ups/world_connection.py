@@ -17,7 +17,7 @@ from django.db import transaction
 
 # Configure logging
 logging.Formatter.converter = time.localtime
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.DEBUG, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     filename='/app/ups/logs/logs.txt',  
                     filemode='a' )
@@ -277,7 +277,6 @@ class WorldConnection:
         Returns:
             bool: True if successful, False otherwise
         """
-        logger.info("Called send message")
         try:
             if not self.socket:
                 logger.error("Socket not connected")
@@ -304,7 +303,6 @@ class WorldConnection:
             self.socket.sendall(bytes(size_bytes))
             self.socket.sendall(serialized)
             
-            logger.info("Finished sending")
             return True
             
         except Exception as e:
@@ -323,11 +321,13 @@ class WorldConnection:
         Returns:
             Protocol Buffer message or None if error
         """
+        logger.debug("called receive msg")
         try:
             if not self.socket:
                 logger.error("Socket not connected to world")
                 return None
-            
+            logger.debug("receive msg and not null")
+
             # Read the size varint
             size_bytes = bytearray()
             while True:
@@ -377,13 +377,15 @@ class WorldConnection:
         while self.connected:
             try:
                 # Receive UResponses
+                logger.debug("Try to receive msg from world")
                 response = self._receive_message(ups_pb2.UResponses())
                 
                 if not response:
                     logger.warning("No response received, retrying in 1 second")
                     time.sleep(1)
                     continue
-                
+
+                logger.debug("received msg from world")
                 # Process completions (UFinished)
                 for completion in response.completions:
                     self._handle_completion(completion)
@@ -426,8 +428,10 @@ class WorldConnection:
     
     def _send_acks(self):
         """Send acknowledgments for received messages"""
+        logger.debug("Called send acks")
         with self.lock:
             if self.acks:
+                logger.debug("entered the inner condition of send acks")
                 # Create UCommands message with only acknowledgments
                 command = ups_pb2.UCommands()
                 command.acks.extend(self.acks)
