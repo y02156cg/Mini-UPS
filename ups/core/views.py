@@ -8,10 +8,12 @@ from django.contrib.auth.models import User
 
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
+from django.db.models import Q
 from django.contrib import messages
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 import json
+import logging
 import psycopg2
 import psycopg2.extras
 import time
@@ -19,7 +21,14 @@ import threading
 import os
 import random
 import string
+
+from core.models import *
+from django.utils.timezone import now
 from datetime import datetime
+
+from amazon_communication import AmazonCommunication
+from core.global_context import amazon_communication_instance
+logger = logging.getLogger(__name__)
 
 """不确定这样connect db是不是正确"""
 def get_db_connection():
@@ -93,73 +102,29 @@ def register(request):
 
         login(request, user)
         return redirect('dashboard')
-        # try:
-        #     conn = get_db_connection()
-        #     with conn.cursor() as cursor:
-        #         cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
-        #         if cursor.fetchone():
-        #             messages.error(request, 'Username already exists')
-        #             return render(request, 'core/register.html')
-                
-        #         cursor.execute(
-        #             "INSERT INTO users (username, password_hash, email) VALUES (%s, %s, %s) RETURNING id",
-        #             (username, password, email)
-        #         )
-        #         user_id = cursor.fetchone()[0]
-        #         conn.commit()
-
-        #         user = authenticate(request, username=username, password=password)
-        #         if user is not None:
-        #             login(request, user)
-        #             return redirect('dashboard')
-        # except Exception as e:
-        #     print(f"Error registering user: {e}")
-        #     messages.error(request, 'An error occurred during registration')
-        # finally:
-        #     if conn:
-        #         conn.close
 
     return render(request, 'core/register.html')
 
 @login_required
 def dashboard(request):
-    user_id = request.user.id
-    packages = []
-    notifications = []
+    user = request.user
+    # Query user packages and trucks
+    packages = (
+        Package.objects
+        .select_related("truck")
+        .filter(user=user)
+        .order_by("-created_at")
+    )
 
-    try:
-        conn = get_db_connection()
-        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT p.id, p.status, p.destination_x, p.destination_y, p.created_at, t.id as truck_id, t.status as truck_status
-                FROM packages p 
-                LEFT JOIN trucks t ON p.truck_id = t.id 
-                WHERE p.user_id = %s
-                ORDER BY p.created_at DESC
-                """,
-                (user_id,)
-            )
+    # Query unread notifications
+    notifications = (
+        Notification.objects
+        .filter(user=user, read=False)
+        .order_by("-created_at")
+    )
 
-            packages = cursor.fetchall()
-            cursor.execute(
-                "SELECT id, message, created_at FROM notifications WHERE user_id = %s AND read = FALSE ORDER BY created_at DESC",
-                (user_id,)
-            )
-            notifications = cursor.fetchall()
-
-            if notifications:
-                cursor.execute(
-                    "UPDATE notifications SET read = TRUE WHERE user_id = %s AND read = FALSE",
-                    (user_id,)
-                )
-                conn.commit()
-    except Exception as e:
-        print(f"Error loading dashboard: {e}")
-        messages.error(request, 'An error occurred while loading your dashboard')
-    finally:
-        if conn:
-            conn.close()
+    # mark as read
+    notifications.update(read=True, updated_at=now())
 
     context = {
         'packages': packages,
@@ -176,61 +141,50 @@ def track_package(request):
     return render(request, 'core/track.html')
 
 def package_details(request, tracking_number):
-    package = None
-    items = []
-    can_redirect = False
+    """
+    查看某个包裹的详细信息
+    """
+    package = (
+        Package.objects
+        .select_related('truck', 'user')
+        .filter(id=tracking_number)
+        .first()
+    )
+    
+    if not package:
+        messages.error(request, f'Package with tracking number {tracking_number} not found')
+        return redirect('track_package')
 
-    try:
-        conn = get_db_connection()
-        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT p.id, p.status, p.destination_x, p.destination_y, p.created_at, p.updated_at,
-                       t.id as truck_id, t.status as truck_status, t.x as truck_x, p.user_id, u.username
-                FROM packages p 
-                LEFT JOIN trucks t ON p.truck_id = t.id 
-                LEFT JOIN auth_user u ON p.user_id = u.id
-                WHERE p.id = %s
-                """ ,
-                (tracking_number,)
-            )
-            package = cursor.fetchone()
+    # Query item
+    items = Item.objects.filter(package_id=tracking_number)
 
-            if not package:
-                messages.error(request, f'Package with tracking number {tracking_number} not found')
-                return redirect('track_package')
-            
-            cursor.execute(
-                "SELECT id, name, description, quantity FROM items WHERE package_id = %s",
-                (tracking_number,)
-            )
-            items = cursor.fetchall()
+    # Determine if redirect is available
+    can_redirect = package.status not in ['delivering', 'delivered']
 
-            can_redirect = package['status'] not in ['delivering', 'delivered']
+    # Determine if the user is owner
+    is_owner = request.user.is_authenticated and request.user.id == package.user_id
 
-            if request.user.is_authenticated and request.user.id == package['user_id']:
-                cursor.execute(
-                    "UPDATE notifications SET read = TRUE WHERE user_id = %s AND message LIKE %s",
-                    (request.user.id, f"%{tracking_number}%")
-                )
-                conn.commit()
-    except Exception as e:
-        print(f"Error loading package details: {e}")
-        messages.error(request, 'An error occurred while loading package details')
-    finally:
-        if conn:
-            conn.close()
+    # If owner, mark as read
+    if is_owner:
+        Notification.objects.filter(
+            user=request.user,
+            message__icontains=tracking_number,
+            read=False
+        ).update(read=True, updated_at=now())
 
     context = {
         'package': package,
         'items': items,
         'can_redirect': can_redirect,
-        'is_owner': request.user.is_authenticated and request.user.id == package['user_id']
+        'is_owner': is_owner,
     }
     return render(request, 'core/package_details.html', context)
 
 @login_required
 def redirect_package(request, tracking_number):
+    """
+    用户请求修改包裹的投递地址
+    """
     if request.method == 'POST':
         new_x = request.POST.get('new_x')
         new_y = request.POST.get('new_y')
@@ -241,63 +195,47 @@ def redirect_package(request, tracking_number):
         except (ValueError, TypeError):
             messages.error(request, 'Invalid coordinates')
             return redirect('package_details', tracking_number=tracking_number)
-        
-        try:
-            conn = get_db_connection()
-            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                cursor.execute(
-                    "SELECT truck_id, status, user_id FROM packages WHERE id = %s",
-                    (tracking_number,)
-                )
-                package = cursor.fetchone()
 
-                if not package:
-                    messages.error(request, 'Package not found')
-                    return redirect('dashboard')
-                
-                if package['user_id'] != request.user.id:
-                    messages.error(request, 'You do not own this package')
-                    return redirect('dashboard')
-                
-                if package['status'] in ['delivering', 'delivered']:
-                    messages.error(request, 'This package has been delivered')
-                    return redirect('package_details', tracking_number=tracking_number)
-                
-                cursor.execute(
-                    "UPDATE packages SET destination_x = %s, destination_y = %s, updated_at = NOW() WHERE id = %s",
-                    (new_x, new_y, tracking_number)
-                )
+        package = Package.objects.select_related('truck', 'user').filter(id=tracking_number).first()
 
-                cursor.execute(
-                    "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
-                    (request.user.id, f"Your package {tracking_number} has been redirected to ({new_x}, {new_y})")
-                )
+        if not package:
+            messages.error(request, 'Package not found')
+            return redirect('dashboard')
 
-                if package['truck_id'] and package['status'] not in ['created', 'waiting_for_pickup', 'pickup_assigned']:
-                    cursor.execute(
-                        """
-                        INSERT INTO amazon_messages (message_type, message_content)
-                        VALUES ('redirect_package', %s)
-                        """,
-                        (json.dumps({
-                            'tracking_number': tracking_number,
-                            'truck_id': package['truck_id'],
-                            'x': new_x,
-                            'y': new_y
-                        }),) # return the whole characters contents
-                    )
+        if package.user_id != request.user.id:
+            messages.error(request, 'You do not own this package')
+            return redirect('dashboard')
 
-                    conn.commit()
-                    messages.success(request, f'Package {tracking_number} redirected to ({new_x}, {new_y})')
-        except Exception as e:
-            print(f"Error redirecting package: {e}")
-            messages.error(request, 'An error occured while redirecting the package')
-        finally:
-            if conn:
-                conn.close()
+        if package.status in ['delivering', 'delivered']:
+            messages.error(request, 'This package has already been delivered')
+            return redirect('package_details', tracking_number=tracking_number)
+
+        # Update package coordinate
+        package.destination_x = new_x
+        package.destination_y = new_y
+        package.updated_at = now()
+        package.save()
+
+        # Create notification
+        Notification.objects.create(
+            user=request.user,
+            message=f"Your package {tracking_number} has been redirected to ({new_x}, {new_y})"
+        )
+
+        # Send redirect message if the truck is assigned and status is valid # TODO
+        if package.truck and package.status not in ['created', 'waiting_for_pickup', 'pickup_assigned']:
+            amazon_communication_instance.send_redirect_package(
+                package_id=tracking_number,
+                new_x=new_x,
+                new_y=new_y,
+                user_id=request.user.id
+            )
+
+        messages.success(request, f'Package {tracking_number} redirected to ({new_x}, {new_y})')
 
         return redirect('package_details', tracking_number=tracking_number)
-    
+
+    # GET 请求，渲染重定向页面 
     return render(request, 'core/redirect_package.html', {'tracking_number': tracking_number})
 
 @login_required
@@ -340,171 +278,28 @@ def admin_dashboard(request):
 
 @csrf_exempt
 def amazon_api(request):
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            action = data.get('action')
-
-            if action == 'request_pickup':
-                # Amazon is requesting a pickup
-                package_id = data.get('package_id')
-                warehouse_id = data.get('warehouse_id')
-                user_id = data.get('user_id')
-                destination_x = data.get('destination_x')
-                destination_y = data.get('destination_y')
-                description = data.get('description')
-                items = data.get('items', [])
-
-                if not package_id:
-                    package_id = generate_tracking_num()
-
-                conn = get_db_connection()
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """
-                        INSERT INTO packages
-                        (id, user_id, warehouse_id, status, destination_x, destination_y, description)
-                        VALUES (%s, %s, %s, 'waiting_for_pickup', %s, %s, %s)
-                        """,
-                        (package_id, user_id, warehouse_id, destination_x, destination_y, description)
-                    )
-
-                    for item in items:
-                        cursor.execute(
-                            "INSERT INTO items (package_id, name, description, quantity) VALUES (%s, %s, %s, %s)",
-                            (package_id, item.get('name'), item.get('description'), item.get('quantity'))
-                        )
-
-                    if user_id:
-                        cursor.execute(
-                            "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
-                            (user_id, f"A new package {package_id} has been created for you")
-                        )
-
-                    conn.commit()
-
-                return JsonResponse({
-                    'status': 'success',
-                    'tracking_number': package_id,
-                    'message': 'Pickup request received'
-                })
-            
-            elif action == 'package_ready':
-                package_id = data.get('package_id')
-
-                conn = get_db_connection()
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        "UPDATE packages SET status = 'ready_for_pickup', updated_at = NOW() WHERE id = %s",
-                        (package_id,)
-                    )
-
-                    cursor.execute(
-                        "SELECT user_id, warehouse_id FROM packages WHERE id = %s",
-                        (package_id,)
-                    )
-                    result = cursor.fetchone()
-
-                    if result:
-                        user_id, warehouse_id = result
-
-                        cursor.execute(
-                            "SELECT id FROM trucks WHERE status = 'idle' LIMIT 1"
-                        )
-                        truck_result = cursor.fetchone()
-
-                        if truck_result:
-                            truck_id = truck_result[0]
-
-                            cursor.execute(
-                                "UPDATE trucks SET status = 'traveling' WHERE id = %s",
-                                (truck_id,)
-                            )
-
-                            cursor.execute(
-                                "UPDATE package SET truck_id = %s, status = 'pickup_assigned', updated_at = NOW() WHERE id = %s",
-                                (truck_id, package_id)
-                            )
-
-                            if user_id:
-                                cursor.execute(
-                                    "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
-                                    (user_id, f"Your package {package_id} is ready for pickup")
-                                )
-                            
-                            cursor.execute(
-                                """
-                                INSERT INTO amazon_messages
-                                (message_type, message_content, status)
-                                VALUES ('pickup_command', %s, 'pending)
-                                """,
-                                (json.dumps({
-                                    'truck_id': truck_id,
-                                    'warehouse_id': warehouse_id,
-                                    'package_id': package_id
-                                }),)
-                            )
-                    conn.commit()
-
-                return JsonResponse({
-                    'status': 'success',
-                    'message': 'Package ready for pickup'
-                })
-
-            elif action == 'query_status':
-                package_id = data.get('package_id')
-
-                conn = get_db_connection()
-                with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                    cursor.execute(
-                        """
-                        SELECT p.status, t.status as truck_status, t.x as truck_x, t.y as truck_y
-                        FROM package p
-                        LEFT JOIN trucks t ON p.truck_id = t.id
-                        WHERE p.id = %s
-                        """,
-                        (package_id,)
-                    )
-                    result = cursor.fetchone()
-
-                if result:
-                    return JsonResponse({
-                        'status': 'success',
-                        'package_status': result['status'],
-                        'truck_status': result['truck_status'] if result['truck_status'] else None,
-                        'truck_location':{
-                            'x': result['truck_x'],
-                            'y': result['truck_y']
-                        } if result['truck_x'] is not None else None
-                    })
-                else:
-                    return JsonResponse({
-                        'status': 'error',
-                        'message': 'Package not found'
-                    }, status=404)
-                
-            else:
-                return JsonResponse({
-                    'status': 'error',
-                    'message': f'Unknown action: {action}'
-                }, status=400)
-            
-        except json.JSONDecodeError:
-            return JsonResponse({
-                    'status': 'error',
-                    'message': 'Invalid JSON'
-                }, status=400)
-        except Exception as e:
-            print(f"Error in Amazon API: {e}")
-            return JsonResponse({
+    if request.method != 'POST':
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Method not allowed, can only POST'
+        }, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        result = amazon_communication_instance.handle_request(data)
+        return JsonResponse(result)
+    except json.JSONDecodeError:
+        return JsonResponse({
                 'status': 'error',
-                'message': str(e)
-            }, status=500)
-        
-    return JsonResponse({
-        'status': 'error',
-        'message': 'Method not allowed'
-    }, status=405)
+                'message': 'Invalid JSON'
+            }, status=400)
+    except Exception as e:
+        print(f"Error in Amazon API: {e}")
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
+    
     
 def truck_status_api(request, truck_id):
     """API endpoint to get truck status for AJAX updates"""

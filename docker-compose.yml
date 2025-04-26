@@ -35,10 +35,12 @@ services:
       WORLD_HOST: ${WORLD_HOST}
       WORLD_PORT: ${WORLD_PORT}
       AMAZON_URL: ${AMAZON_URL}
+      WORLD_ID: ${WORLD_ID}
     ports:
       - "8000:8000"
     volumes:
       - ./ups:/app
+      - ./ups/logs:/app/ups/logs 
     # networks:
     #   - ups-net
     command:  >

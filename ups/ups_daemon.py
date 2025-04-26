@@ -12,9 +12,16 @@ import os
 from world_connection import WorldConnection
 from amazon_communication import AmazonCommunication
 from core.models import *
+from django.db import transaction
+from django.utils import timezone
+from django.db.models import Q
+
 
 # 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    # filename='/app/ups/logs/ups_daemon.log',  
+                    filemode='a' )
 logger = logging.getLogger('ups_daemon')
 
 class UPSDaemon:
@@ -57,129 +64,6 @@ class UPSDaemon:
         self.main_thread = None
         self.truck_assignment_thread = None
     
-    def initialize_database(self):
-        """创建所需的数据库表（如果不存在）"""
-        try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # 创建卡车表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS trucks (
-                    id INTEGER PRIMARY KEY,
-                    status VARCHAR(20) NOT NULL,
-                    x INTEGER NOT NULL,
-                    y INTEGER NOT NULL,
-                    world_id BIGINT,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-                """)
-                
-                # 创建仓库表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS warehouses (
-                    id INTEGER PRIMARY KEY,
-                    x INTEGER NOT NULL,
-                    y INTEGER NOT NULL,
-                    world_id BIGINT,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-                """)
-                
-                # 创建包裹表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS packages (
-                    id VARCHAR(50) PRIMARY KEY,
-                    user_id VARCHAR(50),
-                    warehouse_id INTEGER REFERENCES warehouses(id),
-                    truck_id INTEGER REFERENCES trucks(id),
-                    status VARCHAR(20) NOT NULL,
-                    destination_x INTEGER NOT NULL,
-                    destination_y INTEGER NOT NULL,
-                    description TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-                """)
-                
-                # 创建命令日志表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS command_logs (
-                    id SERIAL PRIMARY KEY,
-                    seq_num BIGINT NOT NULL,
-                    command_type VARCHAR(20) NOT NULL,
-                    command_data JSONB NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    acknowledged_at TIMESTAMP,
-                    retry_count INTEGER DEFAULT 0
-                );
-                """)
-                
-                # 创建错误日志表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS error_logs (
-                    id SERIAL PRIMARY KEY,
-                    seq_num BIGINT,
-                    error_message TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL
-                );
-                """)
-                
-                # 创建用户通知表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS notifications (
-                    id SERIAL PRIMARY KEY,
-                    user_id VARCHAR(50) NOT NULL,
-                    message TEXT NOT NULL,
-                    read BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-                """)
-                
-                # 创建Amazon消息队列表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS amazon_messages (
-                    id SERIAL PRIMARY KEY,
-                    message_type VARCHAR(50) NOT NULL,
-                    message_content JSONB NOT NULL,
-                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-                    created_at TIMESTAMP NOT NULL,
-                    processed_at TIMESTAMP
-                );
-                """)
-                
-                # 创建世界状态表
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS world_state (
-                    world_id BIGINT PRIMARY KEY,
-                    sim_speed INTEGER DEFAULT 100,
-                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-                );
-                """)
-                
-                # 创建命令重试队列
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS command_retry_queue (
-                    id SERIAL PRIMARY KEY,
-                    original_seq_num BIGINT NOT NULL,
-                    retry_count INTEGER NOT NULL,
-                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-                    created_at TIMESTAMP NOT NULL,
-                    completed_at TIMESTAMP
-                );
-                """)
-                
-                conn.commit()
-                logger.info("数据库表初始化完成")
-        
-        except Exception as e:
-            logger.error(f"初始化数据库时出错: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
     
     def start(self, world_id=None, num_trucks=5):
         """
@@ -215,6 +99,10 @@ class UPSDaemon:
             # 设置互相引用
             self.world_connection.set_amazon_communication(self.amazon_communication)
             
+            # config amazon communication
+            from core import global_context
+            global_context.amazon_communication_instance = self.amazon_communication
+
             # 连接到世界模拟器
             if world_id:
                 # 连接到已存在的世界
@@ -244,12 +132,6 @@ class UPSDaemon:
                 # 创建世界状态记录
                 conn = self.db_pool.getconn()
                 try:
-                    # with conn.cursor() as cursor:
-                    #     cursor.execute(
-                    #         "INSERT INTO world_state (world_id) VALUES (%s) ON CONFLICT DO NOTHING",
-                    #         (self.world_id,)
-                    #     )
-                    #     conn.commit()
                     WorldState.objects.get_or_create(
                         world_id=self.world_id,
                         defaults={
@@ -319,8 +201,8 @@ class UPSDaemon:
                 # 监控卡车状态
                 self._monitor_truck_status()
                 
-                # 清理过期记录
-                self._cleanup_old_records()
+                # # 清理过期记录
+                # self._cleanup_old_records()
                 
                 # 休眠一段时间
                 time.sleep(10)
@@ -346,68 +228,58 @@ class UPSDaemon:
         logger.info("卡车分配循环已停止")
     
     def _assign_idle_trucks(self):
-        """分配空闲卡车到待处理的提货任务"""
-        conn = None
+        """分配空闲卡车到包裹并处理pickup"""
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # 查找空闲卡车
-                cursor.execute(
-                    "SELECT id FROM trucks WHERE status = 'idle' LIMIT 5"
-                )
-                idle_trucks = cursor.fetchall()
-                
-                if not idle_trucks:
-                    return
-                
-                # 查找等待提货的包裹
-                cursor.execute(
-                    """
-                    SELECT id, warehouse_id FROM packages 
-                    WHERE status = 'waiting_for_pickup' AND truck_id IS NULL
-                    LIMIT %s
-                    """,
-                    (len(idle_trucks),)
-                )
-                pending_pickups = cursor.fetchall()
-                
-                # 分配卡车给包裹
-                for (truck_id,), (package_id, warehouse_id) in zip(idle_trucks, pending_pickups):
-                    logger.info(f"分配卡车 {truck_id} 提取包裹 {package_id} 从仓库 {warehouse_id}")
-                    
-                    # 更新包裹状态
-                    cursor.execute(
-                        """
-                        UPDATE packages 
-                        SET status = 'pickup_assigned', truck_id = %s, updated_at = NOW() 
-                        WHERE id = %s
-                        """,
-                        (truck_id, package_id)
-                    )
-                    
-                    # 更新卡车状态
-                    cursor.execute(
-                        """
-                        UPDATE trucks 
-                        SET status = 'traveling', updated_at = NOW() 
-                        WHERE id = %s
-                        """,
-                        (truck_id,)
-                    )
-                    
-                    # 提交以确保状态已更新
-                    conn.commit()
-                    
-                    # 发送提货命令
-                    self.world_connection.send_pickup(warehouse_id, truck_id)
-            
+            # 1. Assign idle trucks to waiting package
+            idle_trucks = list(Truck.objects.filter(status='idle')[:5])
+            if not idle_trucks:
+                return
+
+            for truck in idle_trucks:
+                # find waiting package
+                package = Package.objects.filter(
+                    status='waiting_for_pickup', truck_id__isnull=True
+                ).first()
+
+                if not package:
+                    break  
+
+                with transaction.atomic():
+                    package.truck = truck
+                    package.status = 'pickup_assigned'
+                    package.updated_at = timezone.now()
+                    package.save()
+
+                    truck.updated_at = timezone.now()
+                    truck.save()
+
+                    logger.info(f"Truck {truck.id} assigned to created package {package.id}")
+
+            # 2. Send trucks to get pickup_assigned packages (UGoPickup)
+            ready_packages = Package.objects.filter(
+                status='pickup_assigned', truck_id__isnull=False
+            )
+
+            for package in ready_packages:
+                truck = package.truck
+                if truck and truck.status == 'idle':
+                    success = self.world_connection.send_pickup(truck.id, package.warehouse_id)
+                    if success:
+                        with transaction.atomic():
+                            package.status = 'ready_for_pickup'
+                            package.updated_at = timezone.now()
+                            package.save()
+
+                            truck.status = 'traveling'
+                            truck.updated_at = timezone.now()
+                            truck.save()
+
+                        logger.info(f"Sent pickup command for truck {truck.id} to warehouse {package.warehouse_id} for package {package.id}")
+                    else:
+                        logger.error(f"Failed to send pickup command for truck {truck.id} and package {package.id}")
+
         except Exception as e:
-            logger.error(f"分配空闲卡车时出错: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
+            logger.error(f"分配空闲卡车或发pickup时出错: {e}")
     
     def _process_pending_tasks(self):
         """处理待处理的任务"""
@@ -416,71 +288,42 @@ class UPSDaemon:
     
     def _monitor_truck_status(self):
         """监控卡车状态，查询长时间没有状态更新的卡车"""
-        conn = None
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # 查找长时间未更新的卡车
-                cursor.execute(
-                    """
-                    SELECT id FROM trucks 
-                    WHERE updated_at < NOW() - INTERVAL '5 minutes'
-                    AND status NOT IN ('idle', 'error')
-                    LIMIT 5
-                    """
-                )
-                stale_trucks = cursor.fetchall()
-                
-                # 查询这些卡车的状态
-                for truck_id, in stale_trucks:
-                    logger.info(f"查询长时间无更新的卡车 {truck_id}")
-                    self.world_connection.query_truck(truck_id)
-            
+            # 查找5分钟未更新且状态不是 idle/error 的卡车
+            cutoff_time = timezone.now() - timezone.timedelta(minutes=5)
+            stale_trucks = Truck.objects.filter(
+                updated_at__lt=cutoff_time
+            ).exclude(
+                status__in=['idle', 'error']
+            )[:5]
+
+            for truck in stale_trucks:
+                logger.info(f"查询长时间无更新的卡车 {truck.id}")
+                self.world_connection.query_truck(truck.id)
+
         except Exception as e:
-            logger.error(f"监控卡车状态时出错: {e}")
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
-    
+            logger.error(f"监控卡车状态时出错 (ORM版): {e}")
+        
     def _cleanup_old_records(self):
-        """清理旧记录"""
-        conn = None
+        """清理旧记录（ORM重构版）"""
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # # 清理旧命令日志
-                # cursor.execute(
-                #     """
-                #     DELETE FROM command_logs 
-                #     WHERE created_at < NOW() - INTERVAL '7 days'
-                #     """
-                # )
-                
-                # 清理旧错误日志
-                cursor.execute(
-                    """
-                    DELETE FROM error_logs 
-                    WHERE created_at < NOW() - INTERVAL '7 days'
-                    """
-                )
-                
-                # 清理旧通知
-                cursor.execute(
-                    """
-                    DELETE FROM notifications 
-                    WHERE created_at < NOW() - INTERVAL '30 days'
-                    """
-                )
-                
-                conn.commit()
-            
+            # 计算时间点
+            error_cutoff = timezone.now() - timezone.timedelta(days=7)
+            notification_cutoff = timezone.now() - timezone.timedelta(days=30)
+
+            # 清理旧错误日志
+            deleted_errors, _ = ErrorLog.objects.filter(created_at__lt=error_cutoff).delete()
+            logger.info(f"清理了 {deleted_errors} 条过期的错误日志")
+
+            # 清理旧通知
+            deleted_notifications, _ = Notification.objects.filter(created_at__lt=notification_cutoff).delete()
+            logger.info(f"清理了 {deleted_notifications} 条过期的通知")
+
+            # 如果以后需要清理 command_logs，只需要取消注释：
+            # CommandLog.objects.filter(created_at__lt=error_cutoff).delete()
+
         except Exception as e:
-            logger.error(f"清理旧记录时出错: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
+            logger.error(f"清理旧记录时出错 (ORM版): {e}")
 
 # 如果直接运行此文件，则启动UPS守护进程
 if __name__ == "__main__":

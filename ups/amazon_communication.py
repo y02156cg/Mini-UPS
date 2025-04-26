@@ -8,13 +8,21 @@ import psycopg2
 import psycopg2.extras
 from psycopg2 import pool
 import psycopg2.pool
-from datetime import datetime, timezone
+from datetime import datetime
+from django.utils import timezone
+from django.utils.timezone import now
 import os
 from django.contrib.auth.hashers import make_password
 from core.models import *
+from django.contrib.auth.models import User
+from django.db import transaction
+from django.utils.timezone import now
 
+logging.basicConfig (level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    # filename='/app/ups/logs/amazon_communication.log',  
+                    filemode='a' )
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('amazon_comm') # amazon communication logger name
 
 class AmazonCommunication:
@@ -51,71 +59,54 @@ class AmazonCommunication:
         self.running = False
         logger.info("Stop the Amazon communication")
 
+    '''
+    Send messages from databases AmazonMessage
+    _notify functions are to form the message from given content, so that messages can be sent in _send_message_to_amazon
+    notify functions are to store the messages to databases, so the _process_outgoing_messages can read it out and send it periodically
+    '''
     def _process_outgoing_messages(self):
         """Process outgoing messages to Amazon from the database queue"""
         while self.running:
             try:
-                conn = self.db_pool.getconn()
-                with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                    cursor.execute(
-                        """
-                        SELECT id, message_type, message_content
-                        FROM amazon_messages
-                        WHERE status = 'pending'
-                        ORDER BY created_at
-                        LIMIT 10
-                        FOR UPDATE SKIP LOCKED
-                        """
+                with transaction.atomic():
+                    messages = (
+                        AmazonMessage.objects
+                        .select_for_update(skip_locked=True)
+                        .filter(status='pending', created_at__lte=timezone.now())
+                        .order_by('created_at')[:10]
                     )
-                    messages = cursor.fetchall()
 
                     for message in messages:
-                        cursor.execute(
-                            "UPDATE amazon_messages SET status = 'processing' WHERE id = %s",
-                            (message['id'],)
-                        )
-                        conn.commit()
+                        message.status = 'processing'
+                        message.save()
 
-                        success = self._send_message_to_amazon(message['message_type'], json.loads(message['message_content']))
-
-                        status = 'completed' if success else 'failed'
-                        cursor.execute(
-                            "UPDATE amazon_message SET status = %s, processed_at = NOW() WHERE id = %s",
-                            (status, message['id'])
+                        success = self._send_message_to_amazon(
+                            message.message_type,
+                            message.message_content
                         )
-                        conn.commit()
+
+                        message.status = 'completed' if success else 'failed'
+                        message.processed_at = timezone.now()
+                        message.save()
 
                         if not success:
-                            cursor.execute(
-                                """
-                                SELECT COUNT(*) FROM amazon_messages 
-                                WHERE status = 'failed' AND message_type = %s AND message_content = %s
-                                """,
-                                (message['message_type'], message['message_content'])
-                            )
-                            retry_count = cursor.fetchone()[0]
-                            
-                            if retry_count < 3:  # Retry up to 3 times
-                                # Create a new message for retry with exponential backoff
+                            retry_count = AmazonMessage.objects.filter(
+                                status='failed',
+                                message_type=message.message_type,
+                                message_content=message.message_content
+                            ).count()
+
+                            if retry_count < 3:
                                 backoff_time = 5 * (2 ** retry_count)  # 5, 10, 20 seconds
-                                
-                                cursor.execute(
-                                    """
-                                    INSERT INTO amazon_messages 
-                                    (message_type, message_content, status, created_at) 
-                                    VALUES (%s, %s, 'pending', NOW() + interval '%s seconds')
-                                    """,
-                                    (message['message_type'], message['message_content'], backoff_time)
+                                AmazonMessage.objects.create(
+                                    message_type=message.message_type,
+                                    message_content=message.message_content,
+                                    status='pending',
+                                    created_at=timezone.now() + timezone.timedelta(seconds=backoff_time)
                                 )
-                                conn.commit()
 
             except Exception as e:
                 logger.error(f"Error processing outgoing messages: {e}")
-                if conn:
-                    conn.rollback()
-            finally:
-                if conn:
-                    self.db_pool.putconn(conn)
 
             time.sleep(1)
 
@@ -277,6 +268,185 @@ class AmazonCommunication:
         }
         return message
 
+    def notify_truck_arrived(self, truck_id, warehouse_id):
+        """
+        Notify Amazon that a truck has arrived at a warehouse.
+        
+        Args:
+            truck_id: ID of the truck
+            warehouse_id: ID of the warehouse
+            
+        Returns:
+            bool: True if successfully queued, False otherwise
+        """
+        try:
+            AmazonMessage.objects.create(
+                message_type='truck_arrived',
+                message_content={
+                    'truck_id': truck_id,
+                    'warehouse_id': warehouse_id
+                },
+                status='pending'
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error queuing truck_arrived message: {e}")
+            return False
+    
+    def notify_package_loaded(self, package_id, truck_id):
+        """
+        Notify Amazon that a package has been loaded onto a truck.
+        
+        Args:
+            package_id: ID of the package
+            truck_id: ID of the truck
+            
+        Returns:
+            bool: True if successfully queued, False otherwise
+        """
+        try:
+            AmazonMessage.objects.create(
+                message_type='package_loaded',
+                message_content={
+                    'package_id': package_id,
+                    'truck_id': truck_id
+                },
+                status='pending'
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error queuing package_loaded message: {e}")
+            return False
+    
+    def notify_delivery_started(self, package_id, truck_id):
+        """
+        Notify Amazon that delivery has started for a package.
+        
+        Args:
+            package_id: ID of the package
+            truck_id: ID of the truck
+            
+        Returns:
+            bool: True if successfully queued, False otherwise
+        """
+        try:
+            AmazonMessage.objects.create(
+                message_type='delivery_started',
+                message_content={
+                    'package_id': package_id,
+                    'truck_id': truck_id
+                },
+                status='pending'
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error queuing delivery_started message: {e}")
+            return False
+    
+    def notify_package_delivered(self, package_id, truck_id, x, y):
+        """
+        Notify Amazon that a package has been delivered.
+        
+        Args:
+            package_id: ID of the package
+            truck_id: ID of the truck
+            x: X coordinate of delivery location
+            y: Y coordinate of delivery location
+            
+        Returns:
+            bool: True if successfully queued, False otherwise
+        """
+        try:
+            AmazonMessage.objects.create(
+                message_type='package_delivered',
+                message_content={
+                    'package_id': package_id,
+                    'truck_id': truck_id,
+                    'x': x,
+                    'y': y
+                },
+                status='pending',
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error queuing package_delivered message: {e}")
+            return False
+    
+    def notify_world_created(self, world_id):
+        """
+        Notify Amazon about a newly created world.
+        
+        Args:
+            world_id: ID of the world
+            
+        Returns:
+            bool: True if successfully queued, False otherwise
+        """
+        try:
+            AmazonMessage.objects.create(
+            message_type='world_created',
+            message_content={'world_id': world_id},
+            status='pending'
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error queuing world_created message: {e}")
+            return False
+    
+
+    '''
+    Handling requests
+    '''
+    def handle_request(self, request_data):
+        """
+        Handle an incoming request from Amazon.
+        
+        Args:
+            request_data: The JSON request data
+            
+        Returns:
+            dict: Response to send back to Amazon
+        """
+        try:
+            # Extract action and message ID
+            action = request_data.get('action')
+            message_id = request_data.get('message_id', str(uuid.uuid4()))
+            
+            logger.info(f"Received {action} request from Amazon (ID: {message_id})")
+            if not action:
+                return JsonResponse({
+                    'status': 'error',
+                    'message': 'Missing action field'
+                }, status=400)
+            
+            # Handle based on action type
+            if action == 'request_pickup':
+                return self.handle_request_pickup(request_data)
+            elif action == 'package_ready':
+                return self.handle_package_ready(request_data)
+            elif action == 'load_package':
+                return self.handle_load_package(request_data)
+            elif action == 'query_status':
+                return self.handle_query_status(request_data)
+            elif action == 'world_created_response':
+                return self.handle_world_created_response(request_data)
+            elif action == 'heartbeat':
+                return self._create_response('heartbeat', message_id, 'success', message="Service is up")
+            else:
+                logger.warning(f"Unknown action received: {action}")
+                return self._create_response(action, message_id, 'error', message=f"Unknown action: {action}")
+            
+        except Exception as e:
+            logger.error(f"Error handling request: {e}")
+            return {
+                "action": "error_response",
+                "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                "message_id": str(uuid.uuid4()),
+                "in_response_to": request_data.get('message_id', 'unknown'),
+                "status": "error",
+                "message": f"Internal error: {str(e)}"
+            }
+        
     def handle_request_pickup(self, request):
         """
         Handle a request_pickup message from Amazon:
@@ -287,16 +457,15 @@ class AmazonCommunication:
         Returns:
             dict: Response to send back to Amazon
         """
-
         try:
             message_id = request.get('message_id')
             with self.message_lock:
                 if message_id in self.processed_messages:
                     logger.info(f"Duplicate message {message_id}, returning cached response")
                     return self._create_response('pickup_response', message_id, 'success', 
-                                              tracking_number=request.get('package_id'),
-                                              message="Pickup request already processed")
-                
+                                                tracking_number=request.get('package_id'),
+                                                message="Pickup request already processed")
+
             warehouse_id = request.get('warehouse_id')
             user_id = request.get('user_id')
             destination_x = request.get('destination_x')
@@ -309,98 +478,77 @@ class AmazonCommunication:
             if not package_id:
                 package_id = f"UPS{int(time.time())}{uuid.uuid4().hex[:8].upper()}"
 
-            conn = self.db_pool.getconn()
-            try:
-                with conn.cursor() as cursor:
-                    # Ensure warehouse exists in warehouses table
-                    cursor.execute(
-                        "SELECT 1 FROM warehouses WHERE id = %s",
-                        (warehouse_id,)
-                    )
-                    if cursor.fetchone() is None:
-                    # If not exist, insert it with dummy coordinates (or assume provided in request)
-                        warehouse_x = request.get('destination_x', 0)  # default fallback
-                        warehouse_y = request.get('destination_y', 0)
-                        world_id = request.get('world_id', 1)  # fallback or load from config if needed
+            with transaction.atomic():
+                # ensure warehouse exists
+                warehouse, _ = Warehouse.objects.get_or_create(
+                    id=warehouse_id,
+                    defaults={
+                        'x': destination_x,
+                        'y': destination_y,
+                        'world_id': request.get('world_id', 1),
+                    }
+                )
 
-                        cursor.execute(
-                            """
-                            INSERT INTO warehouses (id, x, y, world_id)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (id) DO NOTHING
-                            """,
-                            (warehouse_id, destination_x, destination_y, world_id)
-                        )
-
-                    if user_id:
-                        cursor.execute("SELECT 1 FROM auth_user WHERE id = %s", (user_id,))
-                        if cursor.fetchone() is None:
-                            # Default password is "1234"
-                            default_password_hash = make_password("1234")
-                            cursor.execute(
-                                """
-                                INSERT INTO auth_user (id, username, password, email, is_active, is_staff, is_superuser, date_joined)
-                                VALUES (%s, %s, %s, %s, TRUE, FALSE, FALSE, NOW())
-                                ON CONFLICT (id) DO NOTHING
-                                """,
-                                (user_id, f"user_{user_id}", default_password_hash, f"user_{user_id}@example.com")
-                            )
-
-                    # Create package
-                    cursor.execute(
-                        """
-                        INSERT INTO packages
-                        (id, user_id, warehouse_id, status, destination_x, destination_y, description)
-                        VALUES (%s, %s, %s, 'waiting_for_pickup', %s, %s, %s)
-                        ON CONFLICT (id) DO NOTHING
-                        """,
-                        (package_id, user_id, warehouse_id, destination_x, destination_y, description)
+                # ensure user exist
+                user = None
+                if user_id:
+                    user, created = User.objects.get_or_create(
+                        id=user_id,
+                        defaults={
+                            'username': f"user_{user_id}",
+                            'password': make_password("1234"),
+                            'email': f"user_{user_id}@example.com",
+                            'is_active': True,
+                            'is_staff': False,
+                            'is_superuser': False,
+                            'date_joined': now()
+                        }
                     )
 
-                    for item in items:
-                        cursor.execute(
-                            """
-                            INSERT INTO items (package_id, name, description, quantity) 
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (id) DO NOTHING
-                            """,
-                            (package_id, item.get('name'), item.get('description'), item.get('quantity'))
-                        )
-                    
-                    # Create notification for user if they exist
-                    if user_id:
-                        cursor.execute(
-                            "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
-                            (user_id, f"A new package {package_id} has been created for you")
-                        )
-                    
-                    conn.commit()
+                # create package
+                Package.objects.get_or_create(
+                    id=package_id,
+                    defaults={
+                        'user': user,
+                        'warehouse': warehouse,
+                        'truck': None,
+                        'status': 'created', 
+                        'destination_x': destination_x,
+                        'destination_y': destination_y,
+                        'description': description
+                    }
+                )
 
-                    with self.message_lock:
-                        self.processed_messages.add(message_id)
-                        if len(self.processed_messages) > 1000:
-                            self.processed_messages.pop()
+                # add items
+                for item in items:
+                    Item.objects.create(
+                        package_id=package_id,
+                        name=item.get('name'),
+                        description=item.get('description'),
+                        quantity=item.get('quantity')
+                    )
 
-                    # Return success response
-                    return self._create_response('pickup_response', message_id, 'success', 
-                                              tracking_number=package_id,
-                                              message="Pickup request received")
-                
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Database error in handle_request_pickup: {e}")
-                return self._create_response('pickup_response', message_id, 'error', 
-                                          message=f"Database error: {str(e)}")
-            
-            finally:
-                self.db_pool.putconn(conn)
-                
+                # notification
+                if user:
+                    Notification.objects.create(
+                        user=user,
+                        message=f"A new package {package_id} has been created for you"
+                    )
+
+                with self.message_lock:
+                    self.processed_messages.add(message_id)
+                    if len(self.processed_messages) > 1000:
+                        self.processed_messages.pop()
+
+                return self._create_response('pickup_response', message_id, 'success',
+                                            tracking_number=package_id,
+                                            message="Pickup request received")
+
         except Exception as e:
             logger.error(f"Error handling request_pickup: {e}")
-            return self._create_response('pickup_response', request.get('message_id', 'unknown'), 'error', 
-                                      message=f"Internal error: {str(e)}")
+            return self._create_response('pickup_response', request.get('message_id', 'unknown'), 'error',
+                                        message=f"Internal error: {str(e)}")
         
-    
     def handle_package_ready(self, request):
         """
         Handle a package_ready message from Amazon.
@@ -412,85 +560,52 @@ class AmazonCommunication:
             dict: Response to send back to Amazon
         """
         try:
-            # Check for duplicate message
             message_id = request.get('message_id')
             with self.message_lock:
                 if message_id in self.processed_messages:
                     logger.info(f"Duplicate message {message_id}, returning cached response")
-                    return self._create_response('package_ready_response', message_id, 'success', 
-                                              message="Package ready notification already processed")
-            
-            # Extract request data
+                    return self._create_response(
+                        'package_ready_response', message_id, 'success',
+                        message="Package ready notification already processed"
+                    )
+
             package_id = request.get('package_id')
-            
-            # Update package in database
-            conn = self.db_pool.getconn()
-            try:
-                with conn.cursor() as cursor:
-                    # Update package status
-                    cursor.execute(
-                        "UPDATE packages SET status = 'ready_for_pickup', updated_at = NOW() WHERE id = %s",
-                        (package_id,)
+            package = Package.objects.select_related('user', 'warehouse').filter(id=package_id).first()
+
+            if not package:
+                return self._create_response(
+                    'package_ready_response', message_id, 'error',
+                    message=f"Package {package_id} not found"
+                )
+
+            # If created, then waiting 
+            if package.status == 'created':
+                package.status = 'waiting_for_pickup'
+                logger.info(f"Package {package_id} updated: created -> waiting_for_pickup")
+
+                # Notify users
+                user = package.user
+                # warehouse_id = package.warehouse.id if package.warehouse else None
+                if user:
+                    Notification.objects.create(
+                        user=user,
+                        message=f"Your package {package_id} is waiting for pickup"
                     )
-                    
-                    # Get package info
-                    cursor.execute(
-                        "SELECT user_id, warehouse_id FROM packages WHERE id = %s",
-                        (package_id,)
-                    )
-                    result = cursor.fetchone()
-                    
-                    if result:
-                        user_id, warehouse_id = result
-                        
-                        # Find an idle truck to assign to pickup
-                        cursor.execute(
-                            "SELECT id FROM trucks WHERE status = 'idle' LIMIT 1"
-                        )
-                        truck_result = cursor.fetchone()
-                        
-                        if truck_result:
-                            truck_id = truck_result[0]
-                            
-                            # Update truck and package
-                            cursor.execute(
-                                "UPDATE trucks SET status = 'traveling' WHERE id = %s",
-                                (truck_id,)
-                            )
-                            
-                            cursor.execute(
-                                "UPDATE packages SET truck_id = %s, status = 'pickup_assigned', updated_at = NOW() WHERE id = %s",
-                                (truck_id, package_id)
-                            )
-                            
-                            # Create notification for user
-                            if user_id:
-                                cursor.execute(
-                                    "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
-                                    (user_id, f"Your package {package_id} is ready for pickup")
-                                )
-                            
-                            # Send pickup command to world
-                            self.world_connection.send_pickup(warehouse_id, truck_id)
-                    
-                    conn.commit()
-                    
-                    # Mark message as processed
-                    with self.message_lock:
-                        self.processed_messages.add(message_id)
-                    
-                    # Return success response
-                    return self._create_response('package_ready_response', message_id, 'success', 
-                                              message="Package ready notification processed")
+            else:
+                logger.warning(f"Package {package_id} in unexpected state '{package.status}' when handling package_ready")
+                return self._create_response('package_ready_response', request.get('message_id', 'unknown'), 'error', 
+                                      message=f"Package {package_id} in unexpected state '{package.status}' when handling package_ready")
             
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Database error in handle_package_ready: {e}")
-                return self._create_response('package_ready_response', message_id, 'error', 
-                                          message=f"Database error: {str(e)}")
+            package.updated_at = now()
+            package.save()
+
+            # Mark message as processed
+            with self.message_lock:
+                self.processed_messages.add(message_id)
             
-            finally:
-                self.db_pool.putconn(conn)
+            # Return success response
+            return self._create_response('package_ready_response', message_id, 'success', 
+                                        message="Package ready notification processed")
                 
         except Exception as e:
             logger.error(f"Error handling package_ready: {e}")
@@ -508,177 +623,80 @@ class AmazonCommunication:
             dict: Response to send back to Amazon
         """
         try:
-            # Check for duplicate message
             message_id = request.get('message_id')
             with self.message_lock:
                 if message_id in self.processed_messages:
                     logger.info(f"Duplicate message {message_id}, returning cached response")
-                    return self._create_response('load_package_response', message_id, 'success', 
-                                              message="Load package request already processed")
-            
-            # Extract request data
+                    return self._create_response(
+                        'load_package_response', message_id, 'success',
+                        message="Load package request already processed"
+                    )
+
             package_id = request.get('package_id')
             truck_id = request.get('truck_id')
-            warehouse_id = request.get('warehouse_id')
-            
-            # Verify in database
-            conn = self.db_pool.getconn()
-            try:
-                with conn.cursor() as cursor:
-                    # Check if package exists and is ready
-                    cursor.execute(
-                        "SELECT status FROM packages WHERE id = %s",
-                        (package_id,)
-                    )
-                    package_result = cursor.fetchone()
-                    
-                    if not package_result:
-                        return self._create_response('load_package_response', message_id, 'error', 
-                                                  message=f"Package {package_id} not found")
-                    
-                    package_status = package_result[0]
-                    if package_status not in ['ready_for_pickup', 'pickup_assigned']:
-                        return self._create_response('load_package_response', message_id, 'error', 
-                                                  message=f"Package {package_id} is not ready for pickup (status: {package_status})")
-                    
-                    # Check if truck is at warehouse
-                    cursor.execute(
-                        "SELECT status FROM trucks WHERE id = %s",
-                        (truck_id,)
-                    )
-                    truck_result = cursor.fetchone()
-                    
-                    if not truck_result:
-                        return self._create_response('load_package_response', message_id, 'error', 
-                                                  message=f"Truck {truck_id} not found")
-                    
-                    truck_status = truck_result[0]
-                    if truck_status != 'arrive_warehouse':
-                        return self._create_response('load_package_response', message_id, 'error', 
-                                                  message=f"Truck {truck_id} is not at warehouse (status: {truck_status})")
-                    
-                    # Update package and truck status
-                    cursor.execute(
-                        "UPDATE packages SET status = 'loading', truck_id = %s, updated_at = NOW() WHERE id = %s",
-                        (truck_id, package_id)
-                    )
-                    
-                    cursor.execute(
-                        "UPDATE trucks SET status = 'loading' WHERE id = %s",
-                        (truck_id,)
-                    )
-                    
-                    # Get user ID for notification
-                    cursor.execute(
-                        "SELECT user_id FROM packages WHERE id = %s",
-                        (package_id,)
-                    )
-                    user_result = cursor.fetchone()
-                    
-                    if user_result and user_result[0]:
-                        # Create notification for user
-                        cursor.execute(
-                            "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
-                            (user_result[0], f"Your package {package_id} is being loaded onto truck {truck_id}")
-                        )
-                    
-                    conn.commit()
-                    
-                    # Mark message as processed
-                    with self.message_lock:
-                        self.processed_messages.add(message_id)
-                    
-                    # After a short delay, update to loaded and notify Amazon
-                    # In a real implementation, this would be based on world simulator events
-                    threading.Timer(2.0, self._complete_loading, args=[package_id, truck_id]).start()
-                    
-                    # Return success response
-                    return self._create_response('load_package_response', message_id, 'success', 
-                                              message="Package loading initiated")
-            
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Database error in handle_load_package: {e}")
-                return self._create_response('load_package_response', message_id, 'error', 
-                                          message=f"Database error: {str(e)}")
-            
-            finally:
-                self.db_pool.putconn(conn)
-                
+
+            # 1. 查找包裹
+            package = Package.objects.select_related('user').filter(id=package_id).first()
+            if not package:
+                return self._create_response(
+                    'load_package_response', message_id, 'error',
+                    message=f"Package {package_id} not found"
+                )
+
+            if package.status not in ['ready_for_pickup', 'pickup_assigned']:
+                return self._create_response(
+                    'load_package_response', message_id, 'error',
+                    message=f"Package {package_id} is not ready for pickup (status: {package.status})"
+                )
+
+            # 2. 查找卡车
+            truck = Truck.objects.filter(id=truck_id).first()
+            if not truck:
+                return self._create_response(
+                    'load_package_response', message_id, 'error',
+                    message=f"Truck {truck_id} not found"
+                )
+
+            if truck.status != 'arrive_warehouse':
+                return self._create_response(
+                    'load_package_response', message_id, 'error',
+                    message=f"Truck {truck_id} is not at warehouse (status: {truck.status})"
+                )
+
+            # 3. Update package and truck status
+            package.status = 'loading'
+            package.truck = truck
+            package.updated_at = now()
+            package.save()
+
+            truck.status = 'loading'
+            truck.save()
+
+            # 4. Get user ID for notification
+            if package.user:
+                Notification.objects.create(
+                    user=package.user,
+                    message=f"Your package {package_id} is being loaded onto truck {truck_id}"
+                )
+
+            # 5. Mark as processed
+            with self.message_lock:
+                self.processed_messages.add(message_id)
+
+            # 6. Asynchronized loading 
+            threading.Timer(2.0, self._complete_loading, args=[package_id, truck_id]).start()
+
+            return self._create_response(
+                'load_package_response', message_id, 'success',
+                message="Package loading initiated"
+            )
+
         except Exception as e:
             logger.error(f"Error handling load_package: {e}")
-            return self._create_response('load_package_response', request.get('message_id', 'unknown'), 'error', 
-                                      message=f"Internal error: {str(e)}")
-        
-    def _complete_loading(self, package_id, truck_id):
-        """
-        Complete the loading process and notify Amazon.
-        
-        Args:
-            package_id: Package ID
-            truck_id: Truck ID
-        """
-        try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # Update package and truck status
-                cursor.execute(
-                    "UPDATE packages SET status = 'loaded', updated_at = NOW() WHERE id = %s",
-                    (package_id,)
-                )
-                
-                cursor.execute(
-                    "UPDATE trucks SET status = 'arrive_warehouse' WHERE id = %s",
-                    (truck_id,)
-                )
-                
-                # Get destination coordinates
-                cursor.execute(
-                    "SELECT destination_x, destination_y, user_id FROM packages WHERE id = %s",
-                    (package_id,)
-                )
-                result = cursor.fetchone()
-                
-                if result:
-                    dest_x, dest_y, user_id = result
-                    
-                    # Create notification for user
-                    if user_id:
-                        cursor.execute(
-                            "INSERT INTO notifications (user_id, message) VALUES (%s, %s)",
-                            (user_id, f"Your package {package_id} has been loaded onto truck {truck_id}")
-                        )
-                    
-                    # Add message to notify Amazon that package is loaded
-                    cursor.execute(
-                        """
-                        INSERT INTO amazon_message
-                        (message_type, message_content, status, created_at) 
-                        VALUES ('package_loaded', %s, 'pending', NOW())
-                        """,
-                        (json.dumps({
-                            'package_id': package_id,
-                            'truck_id': truck_id
-                        }),)
-                    )
-                    
-                    # Send the truck for delivery
-                    self.world_connection.send_delivery(truck_id, [{
-                        'package_id': int(package_id) if package_id.isdigit() else hash(package_id) % (2**63),
-                        'x': dest_x, 
-                        'y': dest_y
-                    }])
-                
-                conn.commit()
-        
-        except Exception as e:
-            if conn:
-                conn.rollback()
-            logger.error(f"Error completing loading: {e}")
-        
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
+            return self._create_response(
+                'load_package_response', request.get('message_id', 'unknown'), 'error',
+                message=f"Internal error: {str(e)}"
+            )
 
     def handle_query_status(self, request):
         """
@@ -691,74 +709,140 @@ class AmazonCommunication:
             dict: Response to send back to Amazon
         """
         try:
-            # Check for duplicate message
             message_id = request.get('message_id')
             with self.message_lock:
                 if message_id in self.processed_messages:
                     logger.info(f"Duplicate message {message_id}, returning cached response")
-                    return self._create_response('query_status_response', message_id, 'success', 
-                                              message="Status query already processed")
-            
-            # Extract request data
-            package_id = request.get('package_id')
-            
-            # Get package status from database
-            conn = self.db_pool.getconn()
-            try:
-                with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-                    cursor.execute(
-                        """
-                        SELECT p.status as package_status, 
-                               t.id as truck_id, t.status as truck_status, 
-                               t.x as truck_x, t.y as truck_y
-                        FROM packages p
-                        LEFT JOIN trucks t ON p.truck_id = t.id
-                        WHERE p.id = %s
-                        """,
-                        (package_id,)
+                    return self._create_response(
+                        'query_status_response', message_id, 'success',
+                        message="Status query already processed"
                     )
-                    result = cursor.fetchone()
-                    
-                    if not result:
-                        return self._create_response('query_status_response', message_id, 'error', 
-                                                  message=f"Package {package_id} not found")
-                    
-                    # Mark message as processed
-                    with self.message_lock:
-                        self.processed_messages.add(message_id)
-                    
-                    # Prepare response
-                    response = self._create_response('query_status_response', message_id, 'success',
-                                                 package_status=result['package_status'],
-                                                 message="Status retrieved successfully")
-                    
-                    # Add truck info if available
-                    if result['truck_id']:
-                        response['truck_id'] = result['truck_id']
-                        response['truck_status'] = result['truck_status']
-                        
-                        # Add truck location if available
-                        if result['truck_x'] is not None and result['truck_y'] is not None:
-                            response['truck_location'] = {
-                                'x': result['truck_x'],
-                                'y': result['truck_y']
-                            }
-                    
-                    return response
-            
-            except Exception as e:
-                logger.error(f"Database error in handle_query_status: {e}")
-                return self._create_response('query_status_response', message_id, 'error', 
-                                          message=f"Database error: {str(e)}")
-            
-            finally:
-                self.db_pool.putconn(conn)
-                
+
+            package_id = request.get('package_id')
+            package = Package.objects.select_related('truck').filter(id=package_id).first()
+
+            if not package:
+                return self._create_response(
+                    'query_status_response', message_id, 'error',
+                    message=f"Package {package_id} not found"
+                )
+
+            # Mark message as processed
+            with self.message_lock:
+                self.processed_messages.add(message_id)
+
+            # Prepare response
+            response = self._create_response(
+                'query_status_response',
+                message_id,
+                'success',
+                package_status=package.status,
+                message="Status retrieved successfully"
+            )
+
+            if package.truck:
+                response['truck_id'] = package.truck.id
+                response['truck_status'] = package.truck.status
+                if package.truck.x is not None and package.truck.y is not None:
+                    response['truck_location'] = {
+                        'x': package.truck.x,
+                        'y': package.truck.y
+                    }
+
+            return response
+
         except Exception as e:
             logger.error(f"Error handling query_status: {e}")
-            return self._create_response('query_status_response', request.get('message_id', 'unknown'), 'error', 
-                                      message=f"Internal error: {str(e)}")
+            return self._create_response(
+                'query_status_response',
+                request.get('message_id', 'unknown'),
+                'error',
+                message=f"Internal error: {str(e)}"
+            )
         
+    def handle_world_created_response(self, request):
+        """
+        Handle a world_created_response message from Amazon.
+        
+        Args:
+            request: The JSON request from Amazon
+            
+        Returns:
+            dict: Response to send back to Amazon
+        """
+        try:
+            # Check for duplicate message
+            message_id = request.get('message_id')
+            in_response_to = request.get('in_response_to')
+            status = request.get('status')
+            
+            logger.info(f"Received world_created_response: {status} (Message: {request.get('message', '')})")
+            
+            # No specific processing needed here, just log the response
+            
+            return None  # No response needed for this response
+            
+        except Exception as e:
+            logger.error(f"Error handling world_created_response: {e}")
+            return None
+    
+    '''
+    Helper functions
+    '''
+    def _complete_loading(self, package_id, truck_id):
+        """
+        Complete the loading process and notify Amazon.
+        
+        Args:
+            package_id: Package ID
+            truck_id: Truck ID
+        """
+        try:
+            package = Package.objects.select_related('truck').filter(id=package_id).first()
+            truck = Truck.objects.filter(id=truck_id).first()
+            if not package or not truck:
+                logger.warning(f"Package or Truck not found (pkg: {package}, truck: {truck})")
+                return
+            
+            # 1. Update statuses
+            package.status = 'loaded'
+            package.updated_at = now()
+            package.save()
+
+            truck.status = 'arrive_warehouse'
+            truck.save()
+
+            # 2. Get destination + user
+            dest_x, dest_y = package.destination_x, package.destination_y
+            user = package.user
+
+            # 3. Add user notification
+            if user:
+                Notification.objects.create(
+                    user=user,
+                    message=f"Your package {package_id} has been loaded onto truck {truck_id}"
+                )
+
+            # 4. Add message to notify Amazon that package is loaded
+            AmazonMessage.objects.create(
+                message_type='package_loaded',
+                message_content={
+                    'package_id': package_id,
+                    'truck_id': truck_id
+                },
+                status='pending'
+            )
+
+            # 5. Send delivery command
+            world_pkg_id = int(package_id) if str(package_id).isdigit() else hash(package_id) % (2**63)
+            self.world_connection.send_delivery(truck_id, [{
+                'package_id': world_pkg_id,
+                'x': dest_x,
+                'y': dest_y
+            }])
+        except Exception as e:
+            logger.error(f"Error completing loading: {e}")
+
     def _create_response(self, action, in_response_to, status, **kwargs):
         """
         Create a response message.
@@ -789,154 +873,7 @@ class AmazonCommunication:
         
         return response
     
-    def notify_truck_arrived(self, truck_id, warehouse_id):
-        """
-        Notify Amazon that a truck has arrived at a warehouse.
-        
-        Args:
-            truck_id: ID of the truck
-            warehouse_id: ID of the warehouse
-            
-        Returns:
-            bool: True if successfully queued, False otherwise
-        """
-        try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO amazon_message
-                    (message_type, message_content, status, created_at) 
-                    VALUES ('truck_arrived', %s, 'pending', NOW())
-                    """,
-                    (json.dumps({
-                        'truck_id': truck_id,
-                        'warehouse_id': warehouse_id
-                    }),)
-                )
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"Error queuing truck_arrived message: {e}")
-            if conn:
-                conn.rollback()
-            return False
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
-    
-    def notify_package_loaded(self, package_id, truck_id):
-        """
-        Notify Amazon that a package has been loaded onto a truck.
-        
-        Args:
-            package_id: ID of the package
-            truck_id: ID of the truck
-            
-        Returns:
-            bool: True if successfully queued, False otherwise
-        """
-        try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO amazon_message
-                    (message_type, message_content, status, created_at) 
-                    VALUES ('package_loaded', %s, 'pending', NOW())
-                    """,
-                    (json.dumps({
-                        'package_id': package_id,
-                        'truck_id': truck_id
-                    }),)
-                )
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"Error queuing package_loaded message: {e}")
-            if conn:
-                conn.rollback()
-            return False
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
-    
-    def notify_delivery_started(self, package_id, truck_id):
-        """
-        Notify Amazon that delivery has started for a package.
-        
-        Args:
-            package_id: ID of the package
-            truck_id: ID of the truck
-            
-        Returns:
-            bool: True if successfully queued, False otherwise
-        """
-        try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO amazon_message
-                    (message_type, message_content, status, created_at) 
-                    VALUES ('delivery_started', %s, 'pending', NOW())
-                    """,
-                    (json.dumps({
-                        'package_id': package_id,
-                        'truck_id': truck_id
-                    }),)
-                )
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"Error queuing delivery_started message: {e}")
-            if conn:
-                conn.rollback()
-            return False
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
-    
-    def notify_package_delivered(self, package_id, truck_id, x, y):
-        """
-        Notify Amazon that a package has been delivered.
-        
-        Args:
-            package_id: ID of the package
-            truck_id: ID of the truck
-            x: X coordinate of delivery location
-            y: Y coordinate of delivery location
-            
-        Returns:
-            bool: True if successfully queued, False otherwise
-        """
-        try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO amazon_message
-                    (message_type, message_content, status, created_at) 
-                    VALUES ('package_delivered', %s, 'pending', NOW())
-                    """,
-                    (json.dumps({
-                        'package_id': package_id,
-                        'truck_id': truck_id,
-                        'x': x,
-                        'y': y
-                    }),)
-                )
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"Error queuing package_delivered message: {e}")
-            if conn:
-                conn.rollback()
-            return False
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
-    
+    # Used in views
     def send_redirect_package(self, package_id, new_x, new_y, user_id):
         """
         Send a redirect_package message to Amazon.
@@ -951,133 +888,18 @@ class AmazonCommunication:
             bool: True if successfully queued, False otherwise
         """
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO amazon_message
-                    (message_type, message_content, status, created_at) 
-                    VALUES ('redirect_package', %s, 'pending', NOW())
-                    """,
-                    (json.dumps({
-                        'package_id': package_id,
-                        'x': new_x,
-                        'y': new_y,
-                        'user_id': user_id
-                    }),)
-                )
-                conn.commit()
-                return True
+            AmazonMessage.objects.create(
+                message_type='redirect_package',
+                message_content={
+                    'package_id': package_id,
+                    'x': new_x,
+                    'y': new_y,
+                    'user_id': user_id
+                },
+                status='pending'
+            )
+            return True
         except Exception as e:
             logger.error(f"Error queuing redirect_package message: {e}")
-            if conn:
-                conn.rollback()
             return False
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
     
-    def notify_world_created(self, world_id):
-        """
-        Notify Amazon about a newly created world.
-        
-        Args:
-            world_id: ID of the world
-            
-        Returns:
-            bool: True if successfully queued, False otherwise
-        """
-        try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO amazon_message
-                    (message_type, message_content, status, created_at) 
-                    VALUES ('world_created', %s, 'pending', NOW())
-                    """,
-                    (json.dumps({
-                        'world_id': world_id
-                    }),)
-                )
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"Error queuing world_created message: {e}")
-            if conn:
-                conn.rollback()
-            return False
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
-    
-    def handle_world_created_response(self, request):
-        """
-        Handle a world_created_response message from Amazon.
-        
-        Args:
-            request: The JSON request from Amazon
-            
-        Returns:
-            dict: Response to send back to Amazon
-        """
-        try:
-            # Check for duplicate message
-            message_id = request.get('message_id')
-            in_response_to = request.get('in_response_to')
-            status = request.get('status')
-            
-            logger.info(f"Received world_created_response: {status} (Message: {request.get('message', '')})")
-            
-            # No specific processing needed here, just log the response
-            
-            return None  # No response needed for this response
-            
-        except Exception as e:
-            logger.error(f"Error handling world_created_response: {e}")
-            return None
-    
-    def handle_request(self, request_data):
-        """
-        Handle an incoming request from Amazon.
-        
-        Args:
-            request_data: The JSON request data
-            
-        Returns:
-            dict: Response to send back to Amazon
-        """
-        try:
-            # Extract action and message ID
-            action = request_data.get('action')
-            message_id = request_data.get('message_id', str(uuid.uuid4()))
-            
-            logger.info(f"Received {action} request from Amazon (ID: {message_id})")
-            
-            # Handle based on action type
-            if action == 'request_pickup':
-                return self.handle_request_pickup(request_data)
-            elif action == 'package_ready':
-                return self.handle_package_ready(request_data)
-            elif action == 'load_package':
-                return self.handle_load_package(request_data)
-            elif action == 'query_status':
-                return self.handle_query_status(request_data)
-            elif action == 'world_created_response':
-                return self.handle_world_created_response(request_data)
-            elif action == 'heartbeat':
-                return self._create_response('heartbeat', message_id, 'success', message="Service is up")
-            else:
-                logger.warning(f"Unknown action received: {action}")
-                return self._create_response(action, message_id, 'error', message=f"Unknown action: {action}")
-            
-        except Exception as e:
-            logger.error(f"Error handling request: {e}")
-            return {
-                "action": "error_response",
-                "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                "message_id": str(uuid.uuid4()),
-                "in_response_to": request_data.get('message_id', 'unknown'),
-                "status": "error",
-                "message": f"Internal error: {str(e)}"
-            }

@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+from django.utils import timezone
 import json
 import logging
 import psycopg2
@@ -13,8 +14,12 @@ import world_ups_1_pb2 as ups_pb2
 from core.models import *
 from django.db import transaction
 
+
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    filename='/app/ups/logs/logs.txt',  
+                    filemode='a' )
 logger = logging.getLogger('world_connection')
 
 class WorldConnection:
@@ -161,28 +166,6 @@ class WorldConnection:
             logger.info(f"Saved {len(trucks)} trucks to database for world {world_id}")
         except Exception as e:
             logger.error(f"Database error in save_trucks_to_db: {e}")
-        # try:
-        #     conn = self.db_pool.getconn()
-        #     with conn.cursor() as cursor:
-        #         for truck in trucks:
-        #             cursor.execute(
-        #                 """
-        #                 INSERT INTO trucks (id, status, x, y, world_id) 
-        #                 VALUES (%s, 'idle', %s, %s, %s)
-        #                 ON CONFLICT (id) DO UPDATE 
-        #                 SET status = 'idle', x = %s, y = %s, world_id = %s
-        #                 """,
-        #                 (truck['id'], truck['x'], truck['y'], world_id, 
-        #                  truck['x'], truck['y'], world_id)
-        #             )
-        #         conn.commit()
-        #     logger.info(f"Saved {len(trucks)} trucks to database for world {world_id}")
-        # except Exception as e:
-        #     logger.error(f"Database error in save_trucks_to_db: {e}")
-        #     if conn:
-        #         conn.rollback()
-        # finally:
-        #     self.db_pool.putconn(conn)
     
     def _get_next_seq_num(self):
         """Get the next sequence number for commands"""
@@ -223,33 +206,21 @@ class WorldConnection:
                 if success:
                     logger.info(f"Sent pickup command: Truck {truck_id} to Warehouse {warehouse_id} (seqnum: {pickup.seqnum})")
                     
-                    # Log command to database
-                    conn = self.db_pool.getconn()
-                    try:
-                        with conn.cursor() as cursor:
-                            cursor.execute(
-                                """
-                                INSERT INTO command_logs 
-                                (seq_num, command_type, command_data, created_at) 
-                                VALUES (%s, 'pickup', %s, NOW())
-                                """,
-                                (pickup.seqnum, json.dumps({
-                                    'truck_id': truck_id,
-                                    'warehouse_id': warehouse_id
-                                }))
-                            )
-                            conn.commit()
-                    except Exception as e:
-                        logger.error(f"Database error updating sim speed: {e}")
-                        if conn:
-                            conn.rollback()
-                    finally:
-                        self.db_pool.putconn(conn)
-                
+                    # ORM: Log the command into command_logs
+                    CommandLog.objects.create(
+                        seq_num=pickup.seqnum,
+                        command_type='pickup',
+                        command_data={
+                            'truck_id': truck_id,
+                            'warehouse_id': warehouse_id
+                        },
+                        created_at=timezone.now()
+                    )
+                else:
+                    logger.info(f"Sent pickup command sending fails: Truck {truck_id} to Warehouse {warehouse_id} (seqnum: {pickup.seqnum})")
                 return success
-                
             except Exception as e:
-                logger.error(f"Error setting simulation speed: {e}")
+                logger.error(f"Error sending pickup command to world simulator: {e}")
                 return False
     
     def _send_message(self, message):
@@ -426,21 +397,13 @@ class WorldConnection:
         logger.debug(f"Received acknowledgment for seqnum {ack_num}")
         
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # Mark command as acknowledged
-                cursor.execute(
-                    "UPDATE command_logs SET acknowledged_at = NOW() WHERE seq_num = %s",
-                    (ack_num,)
-                )
-                conn.commit()
+            updated = CommandLog.objects.filter(seq_num=ack_num).update(
+                acknowledged_at=timezone.now()
+            )
+            if updated == 0:
+                logger.warning(f"Acknowledged seqnum {ack_num} not found in command_logs")
         except Exception as e:
             logger.error(f"Database error handling acknowledgment: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
     
     def _handle_completion(self, completion):
         """
@@ -456,162 +419,114 @@ class WorldConnection:
         logger.info(f"Completion: Truck {completion.truckid} at ({completion.x}, {completion.y}) with status '{completion.status}'")
         
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # Update truck location and status
-                cursor.execute(
-                    "UPDATE trucks SET status = %s, x = %s, y = %s WHERE id = %s",
-                    (completion.status, completion.x, completion.y, completion.truckid)
+            with transaction.atomic():
+                # Update Truck status and location
+                Truck.objects.filter(id=completion.truckid).update(
+                    status=completion.status,
+                    x=completion.x,
+                    y=completion.y,
+                    updated_at=timezone.now()
                 )
-                
-                # Case (a): Truck arrived at warehouse
+
                 if completion.status == "arrive warehouse":
-                    # Find warehouse at this location
-                    cursor.execute(
-                        "SELECT id FROM warehouses WHERE x = %s AND y = %s",
-                        (completion.x, completion.y)
-                    )
-                    warehouse_result = cursor.fetchone()
-                    
-                    if warehouse_result:
-                        warehouse_id = warehouse_result[0]
-                        
-                        # Check for packages waiting at this warehouse for this truck
-                        cursor.execute(
-                            """
-                            SELECT p.id, p.user_id 
-                            FROM packages p 
-                            WHERE p.warehouse_id = %s AND p.truck_id = %s
-                            AND p.status IN ('pickup_assigned', 'ready_for_pickup')
-                            """,
-                            (warehouse_id, completion.truckid)
+                    # Find warehouse at truck location
+                    warehouse = Warehouse.objects.filter(
+                        x=completion.x, y=completion.y
+                    ).first()
+
+                    if warehouse:
+                        # Find packages waiting at this warehouse assigned to this truck
+                        packages = Package.objects.filter(
+                            warehouse_id=warehouse.id,
+                            truck_id=completion.truckid,
+                            status="ready_for_pickup"
                         )
-                        packages = cursor.fetchall()
-                        
-                        if packages:
-                            # Notify Amazon that truck has arrived at warehouse
-                            if self.amazon_communication:
-                                self.amazon_communication.notify_truck_arrived(completion.truckid, warehouse_id)
-                            else:
-                                # Queue notification for later
-                                cursor.execute(
-                                    """
-                                    INSERT INTO amazon_message
-                                    (message_type, message_content, status, created_at) 
-                                    VALUES ('truck_arrived', %s, 'pending', NOW())
-                                    """,
-                                    (json.dumps({
-                                        'truck_id': completion.truckid,
-                                        'warehouse_id': warehouse_id
-                                    }),)
-                                )
-                            
-                            # Create notifications for users
-                            for package_id, user_id in packages:
-                                if user_id:
-                                    cursor.execute(
-                                        """
-                                        INSERT INTO notifications (user_id, message, created_at)
-                                        VALUES (%s, %s, NOW())
-                                        """,
-                                        (user_id, f"Truck {completion.truckid} has arrived at the warehouse for your package {package_id}")
+
+                        # Notify Amazon
+                        if self.amazon_communication:
+                            self.amazon_communication.notify_truck_arrived(
+                                completion.truckid, warehouse.id
+                            )
+                        else:
+                            AmazonMessage.objects.create(
+                                message_type='truck_arrived',
+                                message_content={
+                                    'truck_id': completion.truckid,
+                                    'warehouse_id': warehouse.id
+                                },
+                                status='pending',
+                                created_at=timezone.now()
+                            )
+
+                        if packages.exists():
+                            # Notify users about truck arrival
+                            for package in packages:
+                                package.status = 'pickup_complete'
+                                package.updated_at = timezone.now()
+                                package.save()
+
+                                if package.user_id:
+                                    Notification.objects.create(
+                                        user_id=package.user_id,
+                                        message=f"Truck {completion.truckid} has arrived at the warehouse for your package {package.id}",
+                                        created_at=timezone.now()
                                     )
                     else:
                         logger.warning(f"No warehouse found at location ({completion.x}, {completion.y})")
-                
-                # Case (b): Truck finished deliveries
+
                 elif completion.status == "idle":
-                    # Get packages that were being delivered by this truck
-                    cursor.execute(
-                        """
-                        SELECT id FROM packages 
-                        WHERE truck_id = %s AND status = 'delivering'
-                        """,
-                        (completion.truckid,)
+                    # Truck finished deliveries
+                    delivering_packages = Package.objects.filter(
+                        truck_id=completion.truckid,
+                        status='out_for_delivery'
                     )
-                    undelivered_packages = cursor.fetchall()
-                    
-                    # This shouldn't happen normally as we should receive UDeliveryMade for each package
-                    # But just in case, mark any remaining packages as delivered
-                    for package_id, in undelivered_packages:
-                        logger.warning(f"Package {package_id} marked as delivered due to truck {completion.truckid} becoming idle")
-                        
-                        cursor.execute(
-                            """
-                            UPDATE packages 
-                            SET status = 'delivered', updated_at = NOW()
-                            WHERE id = %s
-                            """,
-                            (package_id,)
-                        )
-                        
-                        # Get user for notification
-                        cursor.execute(
-                            "SELECT user_id FROM packages WHERE id = %s",
-                            (package_id,)
-                        )
-                        user_result = cursor.fetchone()
-                        
-                        if user_result and user_result[0]:
-                            # Create notification
-                            cursor.execute(
-                                """
-                                INSERT INTO notifications (user_id, message, created_at)
-                                VALUES (%s, %s, NOW())
-                                """,
-                                (user_result[0], f"Your package {package_id} has been delivered")
+
+                    for pkg in delivering_packages:
+                        logger.warning(f"Package {pkg.id} marked as delivered because truck {completion.truckid} became idle.")
+
+                        pkg.status = 'delivered'
+                        pkg.updated_at = timezone.now()
+                        pkg.save()
+
+                        # Notify user
+                        if pkg.user_id:
+                            Notification.objects.create(
+                                user_id=pkg.user_id,
+                                message=f"Your package {pkg.id} has been delivered",
+                                created_at=timezone.now()
                             )
-                        
+
                         # Notify Amazon
                         if self.amazon_communication:
                             self.amazon_communication.notify_package_delivered(
-                                package_id,
+                                pkg.id,
                                 completion.truckid,
                                 completion.x,
                                 completion.y
                             )
-                    
-                    # Check for pending pickups to assign to this truck
-                    cursor.execute(
-                        """
-                        SELECT id, warehouse_id FROM packages 
-                        WHERE status = 'waiting_for_pickup' AND truck_id IS NULL
-                        LIMIT 1
-                        """
-                    )
-                    pending_pickup = cursor.fetchone()
-                    
-                    if pending_pickup:
-                        package_id, warehouse_id = pending_pickup
-                        
-                        # Assign truck to this package
-                        cursor.execute(
-                            """
-                            UPDATE packages 
-                            SET truck_id = %s, status = 'pickup_assigned', updated_at = NOW() 
-                            WHERE id = %s
-                            """,
-                            (completion.truckid, package_id)
-                        )
-                        
-                        cursor.execute(
-                            "UPDATE trucks SET status = 'traveling' WHERE id = %s",
-                            (completion.truckid,)
-                        )
-                        
-                        # Send pickup command
-                        conn.commit()  # Commit before sending command
-                        self.send_pickup(completion.truckid, warehouse_id)
-                
-                conn.commit()
-        
+
+                    # # Try to assign new pending pickup to this truck
+                    # pending_pickup = Package.objects.filter(
+                    #     status='waiting_for_pickup',
+                    #     truck_id__isnull=True
+                    # ).order_by('created_at').first()
+
+                    # if pending_pickup:
+                    #     pending_pickup.truck_id = completion.truckid
+                    #     pending_pickup.status = 'pickup_assigned'
+                    #     pending_pickup.updated_at = timezone.now()
+                    #     pending_pickup.save()
+
+                    #     Truck.objects.filter(id=completion.truckid).update(
+                    #         status='traveling',
+                    #         updated_at=timezone.now()
+                    #     )
+
+                    #     # Important: send pickup command
+                    #     self.send_pickup(completion.truckid, pending_pickup.warehouse_id)
+
         except Exception as e:
             logger.error(f"Error handling completion: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
     
     def _handle_delivered(self, delivered):
         """
@@ -623,63 +538,49 @@ class WorldConnection:
         logger.info(f"Delivered: Package {delivered.packageid} by truck {delivered.truckid}")
         
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # Find the actual package ID if we're using numeric IDs
+            with transaction.atomic():
                 package_id_str = str(delivered.packageid)
-                
-                # If this is a hash or numeric conversion, try to find the real package ID
+
+                # 处理 ID 不是字母开头，且特别大的 case
                 if not package_id_str.isalpha() and int(delivered.packageid) > 1000000:
-                    cursor.execute(
-                        """
-                        SELECT id FROM packages 
-                        WHERE truck_id = %s AND status = 'delivering'
-                        """,
-                        (delivered.truckid,)
+                    packages = Package.objects.filter(
+                        truck_id=delivered.truckid,
+                        status='delivering'
                     )
-                    results = cursor.fetchall()
-                    if results:
-                        if len(results) == 1:
-                            package_id_str = results[0][0]
-                        else:
-                            logger.warning(f"Multiple packages found for truck {delivered.truckid}, can't determine which was delivered")
-                
-                # Update package status
-                cursor.execute(
-                    """
-                    UPDATE packages 
-                    SET status = 'delivered', updated_at = NOW()
-                    WHERE id = %s AND status = 'delivering'
-                    RETURNING user_id
-                    """,
-                    (package_id_str,)
-                )
-                result = cursor.fetchone()
-                
-                if result:
-                    user_id = result[0]
-                    
-                    # Create notification for user
+
+                    if packages.count() == 1:
+                        package_id_str = packages.first().id
+                    elif packages.count() > 1:
+                        logger.warning(f"Multiple delivering packages found for truck {delivered.truckid}, can't determine which was delivered.")
+
+                # 更新 Package 状态
+                updated_package = Package.objects.filter(
+                    id=package_id_str,
+                    status='delivering'
+                ).first()
+
+                if updated_package:
+                    updated_package.status = 'delivered'
+                    updated_package.updated_at = timezone.now()
+                    updated_package.save()
+
+                    user_id = updated_package.user_id
+
+                    # 通知用户
                     if user_id:
-                        cursor.execute(
-                            """
-                            INSERT INTO notifications (user_id, message, created_at)
-                            VALUES (%s, %s, NOW())
-                            """,
-                            (user_id, f"Your package {package_id_str} has been delivered!")
+                        Notification.objects.create(
+                            user_id=user_id,
+                            message=f"Your package {package_id_str} has been delivered!",
+                            created_at=timezone.now()
                         )
-                    
-                    # Get truck location
-                    cursor.execute(
-                        "SELECT x, y FROM trucks WHERE id = %s",
-                        (delivered.truckid,)
-                    )
-                    location = cursor.fetchone()
-                    
-                    if location:
-                        x, y = location
-                        
-                        # Notify Amazon
+
+                    # 获取 Truck 位置信息
+                    truck = Truck.objects.filter(id=delivered.truckid).first()
+
+                    if truck:
+                        x, y = truck.x, truck.y
+
+                        # 通知 Amazon
                         if self.amazon_communication:
                             self.amazon_communication.notify_package_delivered(
                                 package_id_str,
@@ -688,32 +589,22 @@ class WorldConnection:
                                 y
                             )
                         else:
-                            # Queue notification for later
-                            cursor.execute(
-                                """
-                                INSERT INTO amazon_message
-                                (message_type, message_content, status, created_at) 
-                                VALUES ('package_delivered', %s, 'pending', NOW())
-                                """,
-                                (json.dumps({
+                            AmazonMessage.objects.create(
+                                message_type='package_delivered',
+                                message_content={
                                     'package_id': package_id_str,
                                     'truck_id': delivered.truckid,
                                     'x': x,
                                     'y': y
-                                }),)
+                                },
+                                status='pending',
+                                created_at=timezone.now()
                             )
                 else:
                     logger.warning(f"Package {package_id_str} not found or not in 'delivering' status")
-                
-                conn.commit()
-        
+
         except Exception as e:
-            logger.error(f"Error handling delivered notification: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
+            logger.error(f"Error handling delivered notification (ORM version): {e}")
     
     def _handle_truck_status(self, status):
         """
@@ -725,145 +616,71 @@ class WorldConnection:
         logger.info(f"Truck Status: Truck {status.truckid} is '{status.status}' at ({status.x}, {status.y})")
         
         try:
-            conn = self.db_pool.getconn()
-            with conn.cursor() as cursor:
-                # Update truck status and location in database
-                cursor.execute(
-                    "UPDATE trucks SET status = %s, x = %s, y = %s, updated_at = NOW() WHERE id = %s",
-                    (status.status, status.x, status.y, status.truckid)
+            with transaction.atomic():
+                # Update Truck status and location
+                Truck.objects.filter(id=status.truckid).update(
+                    status=status.status,
+                    x=status.x,
+                    y=status.y,
+                    updated_at=timezone.now()
                 )
                 
-                # Notify any connected clients about truck status change
-                cursor.execute(
-                    """
-                    SELECT user_id FROM user_truck_subscriptions 
-                    WHERE truck_id = %s
-                    """,
-                    (status.truckid,)
-                )
-                subscribers = cursor.fetchall()
+                # If you had user subscriptions, here would query and notify them
+                # You can skip it now, or define a UserTruckSubscription model later
                 
-                # Create notifications for users tracking this truck
-                for user_id, in subscribers:
-                    cursor.execute(
-                        """
-                        INSERT INTO notifications (user_id, message, created_at)
-                        VALUES (%s, %s, NOW())
-                        """,
-                        (user_id, f"Truck {status.truckid} is now {status.status} at location ({status.x}, {status.y})")
-                    )
-                
-                # Check if this is a truck that recently finished loading packages
-                # and should now be sent for delivery
+                # Handle "arrive warehouse" status: check if loaded packages exist
                 if status.status == "arrive warehouse":
-                    cursor.execute(
-                        """
-                        SELECT COUNT(*) FROM packages
-                        WHERE truck_id = %s AND status = 'loaded'
-                        """,
-                        (status.truckid,)
+                    loaded_packages = Package.objects.filter(
+                        truck_id=status.truckid,
+                        status='loaded'
                     )
-                    loaded_packages_count = cursor.fetchone()[0]
                     
-                    if loaded_packages_count > 0:
-                        # Get package destinations
-                        cursor.execute(
-                            """
-                            SELECT id, delivery_x, delivery_y FROM packages
-                            WHERE truck_id = %s AND status = 'loaded'
-                            """,
-                            (status.truckid,)
-                        )
-                        packages = cursor.fetchall()
+                    if loaded_packages.exists():
+                        package_locations = [
+                            {
+                                'package_id': pkg.id,
+                                'x': pkg.destination_x,
+                                'y': pkg.destination_y
+                            }
+                            for pkg in loaded_packages
+                        ]
                         
-                        if packages:
-                            # Prepare package locations for delivery
-                            package_locations = []
-                            for pkg_id, x, y in packages:
-                                package_locations.append({
-                                    'package_id': pkg_id,
-                                    'x': x,
-                                    'y': y
-                                })
-                            
-                            # Commit changes before sending command
-                            conn.commit()
-                            
-                            # Send delivery command
-                            self.send_delivery(status.truckid, package_locations)
-                            return  # Avoid second commit
+                        # Send delivery command
+                        self.send_delivery(status.truckid, package_locations)
+                        return  # Return early to avoid duplicate commit
                 
-                # Update truck location in any active deliveries
+                # Handle "delivering" status: update location info and ETA
                 if status.status == "delivering":
-                    cursor.execute(
-                        """
-                        UPDATE active_deliveries 
-                        SET current_x = %s, current_y = %s, updated_at = NOW()
-                        WHERE truck_id = %s
-                        """,
-                        (status.x, status.y, status.truckid)
+                    delivering_packages = Package.objects.filter(
+                        truck_id=status.truckid,
+                        status='delivering'
                     )
                     
-                    # Calculate and update ETA for packages being delivered by this truck
-                    cursor.execute(
-                        """
-                        SELECT p.id, p.delivery_x, p.delivery_y, 
-                               SQRT(POWER(p.delivery_x - %s, 2) + POWER(p.delivery_y - %s, 2)) as distance
-                        FROM packages p
-                        WHERE p.truck_id = %s AND p.status = 'delivering'
-                        """,
-                        (status.x, status.y, status.truckid)
-                    )
-                    packages = cursor.fetchall()
+                    # Fetch simulation speed
+                    world_state = WorldState.objects.filter(world_id=self.world_id).first()
+                    sim_speed = world_state.sim_speed if world_state else 100  # Default to 100
                     
-                    for pkg_id, dest_x, dest_y, distance in packages:
-                        # Assuming average speed of 1 unit per simulation tick
-                        # Multiply by current simulation speed to get approximate ETA
-                        cursor.execute(
-                            "SELECT sim_speed FROM world_state WHERE world_id = %s",
-                            (self.world_id,)
-                        )
-                        result = cursor.fetchone()
-                        
-                        if result:
-                            sim_speed = result[0]
+                    for pkg in delivering_packages:
+                        distance = ((pkg.destination_x - status.x) ** 2 + (pkg.destination_y - status.y) ** 2) ** 0.5
+                        if sim_speed > 0:
                             eta_minutes = int(distance / (sim_speed / 100.0))
-                            
-                            cursor.execute(
-                                """
-                                UPDATE packages 
-                                SET estimated_delivery = NOW() + INTERVAL '%s minutes', 
-                                    updated_at = NOW()
-                                WHERE id = %s
-                                """,
-                                (eta_minutes, pkg_id)
+                        else:
+                            eta_minutes = 0
+                        
+                        pkg.estimated_delivery = timezone.now() + timezone.timedelta(minutes=eta_minutes)
+                        pkg.updated_at = timezone.now()
+                        pkg.save()
+                        
+                        # Send notification to user
+                        if pkg.user_id:
+                            Notification.objects.create(
+                                user_id=pkg.user_id,
+                                message=f"Your package {pkg.id} is en route! Estimated delivery in {eta_minutes} minutes.",
+                                created_at=timezone.now()
                             )
-                            
-                            # Notify user of updated ETA
-                            cursor.execute(
-                                "SELECT user_id FROM packages WHERE id = %s",
-                                (pkg_id,)
-                            )
-                            user_result = cursor.fetchone()
-                            
-                            if user_result and user_result[0]:
-                                cursor.execute(
-                                    """
-                                    INSERT INTO notifications (user_id, message, created_at)
-                                    VALUES (%s, %s, NOW())
-                                    """,
-                                    (user_result[0], f"Your package {pkg_id} is en route! Estimated delivery in {eta_minutes} minutes.")
-                                )
-                
-                conn.commit()
-                
+        
         except Exception as e:
             logger.error(f"Error handling truck status: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
     
     def _handle_error(self, error):
         """
@@ -879,137 +696,70 @@ class WorldConnection:
             return
         
         try:
-            conn = self.db_pool.getconn()
-            try:
-                with conn.cursor() as cursor:
-                    # Log error in database
-                    cursor.execute(
-                        """
-                        INSERT INTO error_logs (seq_num, error_message, created_at)
-                        VALUES (%s, %s, NOW())
-                        """,
-                        (error.originseqnum, error.err)
-                    )
-                    
-                    # Find the original command
-                    cursor.execute(
-                        "SELECT command_type, command_data FROM command_logs WHERE seq_num = %s",
-                        (error.originseqnum,)
-                    )
-                    command = cursor.fetchone()
-                    
-                    if command:
-                        command_type, command_data = command
-                        
+            with transaction.atomic():
+                # Log the error into ErrorLog
+                ErrorLog.objects.create(
+                    seq_num=error.originseqnum,
+                    error_message=error.err,
+                    created_at=timezone.now()
+                )
+
+                # Fetch the original command
+                command_log = CommandLog.objects.filter(seq_num=error.originseqnum).first()
+
+                if command_log:
+                    command_type = command_log.command_type
+                    command_data = command_log.command_data or {}
+
+                    if isinstance(command_data, str):
                         try:
                             command_data = json.loads(command_data)
                         except json.JSONDecodeError:
                             logger.error(f"Failed to parse command data: {command_data}")
                             command_data = {}
-                        
-                        # Handle retry logic based on command type
-                        if command_type == 'pickup':
-                            truck_id = command_data.get('truck_id')
-                            if truck_id:
-                                # Reset truck status
-                                cursor.execute(
-                                    "UPDATE trucks SET status = 'idle' WHERE id = %s",
-                                    (truck_id,)
-                                )
-                                
-                                # Reset package status
-                                cursor.execute(
-                                    """
-                                    UPDATE packages 
-                                    SET status = 'waiting_for_pickup', truck_id = NULL, updated_at = NOW()
-                                    WHERE truck_id = %s AND status = 'pickup_assigned'
-                                    """,
-                                    (truck_id,)
-                                )
-                                logger.info(f"Reset truck {truck_id} and associated packages after pickup error")
-                        
-                        elif command_type == 'delivery':
-                            truck_id = command_data.get('truck_id')
-                            if truck_id:
-                                # Reset truck status
-                                cursor.execute(
-                                    "UPDATE trucks SET status = 'arrive_warehouse' WHERE id = %s",
-                                    (truck_id,)
-                                )
-                                
-                                # Reset package status
-                                cursor.execute(
-                                    """
-                                    UPDATE packages 
-                                    SET status = 'loaded', updated_at = NOW()
-                                    WHERE truck_id = %s AND status = 'delivering'
-                                    """,
-                                    (truck_id,)
-                                )
-                                logger.info(f"Reset truck {truck_id} and associated packages after delivery error")
-                        
-                        elif command_type == 'query':
-                            # No specific recovery needed for query errors
-                            logger.info(f"No recovery needed for query error with seqnum {error.originseqnum}")
-                    
-                    # # Notify admin about the error
-                    # cursor.execute(
-                    #     """
-                    #     INSERT INTO admin_alerts (alert_type, message, created_at)
-                    #     VALUES ('world_error', %s, NOW())
-                    #     """,
-                    #     (f"World error: {error.err} (Seq: {error.originseqnum})",)
-                    # )
-                    
-                    # Schedule automatic retry if needed and possible
-                    if hasattr(error, 'retry') and error.retry:
-                        # Check retry count for this command
-                        cursor.execute(
-                            """
-                            SELECT retry_count FROM command_logs 
-                            WHERE seq_num = %s
-                            """,
-                            (error.originseqnum,)
+
+                    truck_id = command_data.get('truck_id')
+
+                    # Handle recovery logic
+                    if command_type == 'pickup' and truck_id:
+                        Truck.objects.filter(id=truck_id).update(status='idle', updated_at=timezone.now())
+                        Package.objects.filter(truck_id=truck_id, status='pickup_assigned').update(
+                            status='waiting_for_pickup',
+                            truck_id=None,
+                            updated_at=timezone.now()
                         )
-                        result = cursor.fetchone()
-                        
-                        if result and result[0] < 3:  # Max 3 retries
-                            retry_count = result[0] + 1
-                            
-                            # Update retry count
-                            cursor.execute(
-                                """
-                                UPDATE command_logs 
-                                SET retry_count = %s, updated_at = NOW()
-                                WHERE seq_num = %s
-                                """,
-                                (retry_count, error.originseqnum)
-                            )
-                            
-                            # Schedule retry
-                            cursor.execute(
-                                """
-                                INSERT INTO command_retry_queue
-                                (original_seq_num, retry_count, status, created_at)
-                                VALUES (%s, %s, 'pending', NOW())
-                                """,
-                                (error.originseqnum, retry_count)
-                            )
-                            
-                            logger.info(f"Scheduled retry #{retry_count} for command with seqnum {error.originseqnum}")
-                    
-                    conn.commit()
-                    
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Error handling world error: {e}")
-        
+                        logger.info(f"Reset truck {truck_id} and associated packages after pickup error")
+
+                    elif command_type == 'delivery' and truck_id:
+                        Truck.objects.filter(id=truck_id).update(status='arrive_warehouse', updated_at=timezone.now())
+                        Package.objects.filter(truck_id=truck_id, status='delivering').update(
+                            status='loaded',
+                            updated_at=timezone.now()
+                        )
+                        logger.info(f"Reset truck {truck_id} and associated packages after delivery error")
+
+                    elif command_type == 'query':
+                        logger.info(f"No recovery needed for query error with seqnum {error.originseqnum}")
+
+                # Schedule automatic retry if needed
+                if hasattr(error, 'retry') and error.retry:
+                    if command_log and command_log.retry_count < 3:
+                        # Update retry count
+                        command_log.retry_count += 1
+                        command_log.updated_at = timezone.now()
+                        command_log.save()
+
+                        # Insert into retry queue
+                        CommandRetryQueue.objects.create(
+                            original_seq_num=error.originseqnum,
+                            retry_count=command_log.retry_count,
+                            status='pending',
+                            created_at=timezone.now()
+                        )
+                        logger.info(f"Scheduled retry #{command_log.retry_count} for command with seqnum {error.originseqnum}")
+
         except Exception as e:
-            logger.error(f"Database connection error while handling world error: {e}")
-        
-        finally:
-            if conn:
-                self.db_pool.putconn(conn)
+            logger.error(f"Error handling world error (ORM version): {e}")
     
     def process_retry_queue(self):
         """Process the command retry queue"""
@@ -1017,113 +767,72 @@ class WorldConnection:
         
         while self.connected:
             try:
-                conn = self.db_pool.getconn()
-                with conn.cursor() as cursor:
-                    # Get pending retries
-                    cursor.execute(
-                        """
-                        SELECT id, original_seq_num, retry_count
-                        FROM command_retry_queue
-                        WHERE status = 'pending'
-                        ORDER BY created_at ASC
-                        LIMIT 1
-                        """
-                    )
-                    retry = cursor.fetchone()
-                    
-                    if retry:
-                        retry_id, original_seq_num, retry_count = retry
-                        
-                        # Mark as processing
-                        cursor.execute(
-                            """
-                            UPDATE command_retry_queue
-                            SET status = 'processing', updated_at = NOW()
-                            WHERE id = %s
-                            """,
-                            (retry_id,)
-                        )
-                        
-                        # Get original command
-                        cursor.execute(
-                            """
-                            SELECT command_type, command_data 
-                            FROM command_logs
-                            WHERE seq_num = %s
-                            """,
-                            (original_seq_num,)
-                        )
-                        command = cursor.fetchone()
-                        
-                        if command:
-                            command_type, command_data = command
-                            try:
-                                command_data = json.loads(command_data)
-                                
-                                # Commit before executing command
-                                conn.commit()
-                                
-                                # Resend command based on type
+                # Fetch a pending retry entry
+                retry_entry = CommandRetryQueue.objects.filter(
+                    status='pending'
+                ).order_by('created_at').first()
+
+                if retry_entry:
+                    try:
+                        with transaction.atomic():
+                            # Mark it as processing
+                            retry_entry.status = 'processing'
+                            retry_entry.updated_at = timezone.now()
+                            retry_entry.save()
+
+                            # Fetch corresponding original command
+                            command_log = CommandLog.objects.filter(
+                                seq_num=retry_entry.original_seq_num
+                            ).first()
+
+                            if command_log:
+                                command_data = json.loads(command_log.command_data)
+                                command_type = command_log.command_type
                                 success = False
+
+                                # Try to resend command
                                 if command_type == 'pickup':
                                     truck_id = command_data.get('truck_id')
                                     warehouse_id = command_data.get('warehouse_id')
                                     if truck_id and warehouse_id:
                                         success = self.send_pickup(truck_id, warehouse_id)
-                                
+
                                 elif command_type == 'delivery':
                                     truck_id = command_data.get('truck_id')
                                     package_locations = command_data.get('package_locations')
                                     if truck_id and package_locations:
                                         success = self.send_delivery(truck_id, package_locations)
-                                
+
                                 elif command_type == 'query':
                                     truck_id = command_data.get('truck_id')
                                     if truck_id:
                                         success = self.query_truck(truck_id)
-                                
+
                                 # Update retry status
-                                conn = self.db_pool.getconn()  # Get new connection
-                                with conn.cursor() as cursor:
-                                    cursor.execute(
-                                        """
-                                        UPDATE command_retry_queue
-                                        SET status = %s, completed_at = NOW()
-                                        WHERE id = %s
-                                        """,
-                                        ('success' if success else 'failed', retry_id)
-                                    )
-                                    conn.commit()
-                                
-                                logger.info(f"Retry #{retry_count} for command {original_seq_num}: {'Success' if success else 'Failed'}")
-                            
-                            except Exception as e:
-                                logger.error(f"Error processing retry: {e}")
-                                if conn:
-                                    conn.rollback()
-                        else:
-                            # Mark as failed if original command not found
-                            cursor.execute(
-                                """
-                                UPDATE command_retry_queue
-                                SET status = 'failed', completed_at = NOW()
-                                WHERE id = %s
-                                """,
-                                (retry_id,)
-                            )
-                            conn.commit()
-                
-                # Sleep before checking again
+                                retry_entry.status = 'success' if success else 'failed'
+                                retry_entry.completed_at = timezone.now()
+                                retry_entry.save()
+
+                                logger.info(f"Retry #{retry_entry.retry_count} for command {retry_entry.original_seq_num}: {'Success' if success else 'Failed'}")
+                            else:
+                                # Cannot find original command, mark as failed
+                                retry_entry.status = 'failed'
+                                retry_entry.completed_at = timezone.now()
+                                retry_entry.save()
+
+                    except Exception as e:
+                        logger.error(f"Error processing retry entry {retry_entry.id}: {e}")
+                        if retry_entry:
+                            retry_entry.status = 'failed'
+                            retry_entry.completed_at = timezone.now()
+                            retry_entry.save()
+
                 time.sleep(5)
-                
+
             except Exception as e:
                 logger.error(f"Error in retry queue processor: {e}")
                 time.sleep(5)
-                
-            finally:
-                if conn:
-                    self.db_pool.putconn(conn)
-        
+
         logger.info("Retry queue processor stopped")
     
     def send_heartbeat(self):
@@ -1154,148 +863,99 @@ class WorldConnection:
         
         while self.connected:
             try:
-                conn = self.db_pool.getconn()
-                with conn.cursor() as cursor:
-                    # Get pending commands
-                    cursor.execute(
-                        """
-                        SELECT id, command_type, command_data
-                        FROM command_queue
-                        WHERE status = 'pending'
-                        ORDER BY priority DESC, created_at ASC
-                        LIMIT 1
-                        """
-                    )
-                    command = cursor.fetchone()
-                    
-                    if command:
-                        command_id, command_type, command_data = command
-                        
-                        # Mark as processing
-                        cursor.execute(
-                            """
-                            UPDATE command_queue
-                            SET status = 'processing', updated_at = NOW()
-                            WHERE id = %s
-                            """,
-                            (command_id,)
-                        )
-                        
-                        try:
-                            command_data = json.loads(command_data)
-                            
-                            # Commit before executing command
-                            conn.commit()
-                            
-                            # Execute command based on type
+                # Fetch a pending command ordered by priority desc, created_at asc
+                command_entry = CommandQueue.objects.filter(
+                    status='pending'
+                ).order_by('-priority', 'created_at').first()
+
+                if command_entry:
+                    try:
+                        with transaction.atomic():
+                            # Mark it as processing
+                            command_entry.status = 'processing'
+                            command_entry.updated_at = timezone.now()
+                            command_entry.save()
+
+                            # Parse the command data
+                            command_data = command_entry.command_data
+                            command_type = command_entry.command_type
+
                             success = False
                             if command_type == 'pickup':
                                 truck_id = command_data.get('truck_id')
                                 warehouse_id = command_data.get('warehouse_id')
                                 if truck_id and warehouse_id:
                                     success = self.send_pickup(truck_id, warehouse_id)
-                            
+
                             elif command_type == 'delivery':
                                 truck_id = command_data.get('truck_id')
                                 package_locations = command_data.get('package_locations')
                                 if truck_id and package_locations:
                                     success = self.send_delivery(truck_id, package_locations)
-                            
+
                             elif command_type == 'query':
                                 truck_id = command_data.get('truck_id')
                                 if truck_id:
                                     success = self.query_truck(truck_id)
-                            
-                            # Update command status
-                            conn = self.db_pool.getconn()  # Get new connection
-                            with conn.cursor() as cursor:
-                                cursor.execute(
-                                    """
-                                    UPDATE command_queue
-                                    SET status = %s, completed_at = NOW()
-                                    WHERE id = %s
-                                    """,
-                                    ('success' if success else 'failed', command_id)
-                                )
-                                conn.commit()
-                            
-                        except Exception as e:
-                            logger.error(f"Error processing command: {e}")
-                            # Mark as failed
-                            conn = self.db_pool.getconn()  # Get new connection
-                            with conn.cursor() as cursor:
-                                cursor.execute(
-                                    """
-                                    UPDATE command_queue
-                                    SET status = 'failed', error_message = %s, updated_at = NOW()
-                                    WHERE id = %s
-                                    """,
-                                    (str(e), command_id)
-                                )
-                                conn.commit()
-                
-                # Sleep before checking again
+
+                            # Update status based on success
+                            command_entry.status = 'success' if success else 'failed'
+                            command_entry.completed_at = timezone.now()
+                            command_entry.save()
+
+                            logger.info(f"Processed command {command_entry.id} ({command_type}): {'Success' if success else 'Failed'}")
+
+                    except Exception as e:
+                        logger.error(f"Error processing command {command_entry.id}: {e}")
+                        command_entry.status = 'failed'
+                        command_entry.error_message = str(e)
+                        command_entry.updated_at = timezone.now()
+                        command_entry.save()
+
                 time.sleep(1)
-                
+
             except Exception as e:
-                logger.error(f"Error in command queue processor: {e}")
+                logger.error(f"Error in command queue processor loop: {e}")
                 time.sleep(5)
-                
-            finally:
-                if conn:
-                    self.db_pool.putconn(conn)
-        
+
         logger.info("Command queue processor stopped")
     
     def process_amazon_messages(self):
-        """Process pending messages to Amazon"""
+        """Process pending messages to Amazon using ORM."""
         logger.info("Starting Amazon message processor")
-        
+
         while self.connected:
             if not self.amazon_communication:
                 logger.warning("Amazon communication not configured, waiting...")
                 time.sleep(10)
                 continue
-            
+
             try:
-                conn = self.db_pool.getconn()
-                with conn.cursor() as cursor:
-                    # Get pending messages
-                    cursor.execute(
-                        """
-                        SELECT id, message_type, message_content
-                        FROM amazon_message
-                        WHERE status = 'pending'
-                        ORDER BY created_at ASC
-                        LIMIT 10
-                        """
-                    )
-                    messages = cursor.fetchall()
-                    
-                    for msg_id, msg_type, msg_content in messages:
-                        # Mark as processing
-                        cursor.execute(
-                            """
-                            UPDATE amazon_message
-                            SET status = 'processing', updated_at = NOW()
-                            WHERE id = %s
-                            """,
-                            (msg_id,)
-                        )
-                        
-                        try:
-                            content = json.loads(msg_content)
+                # Fetch pending messages (limit 10)
+                messages = AmazonMessage.objects.filter(
+                    status='pending'
+                ).order_by('created_at')[:10]
+
+                for message in messages:
+                    try:
+                        with transaction.atomic():
+                            # Mark as processing
+                            message.status = 'processing'
+                            message.updated_at = timezone.now()
+                            message.save()
+
+                            content = message.message_content
                             success = False
-                            
+
                             # Process based on message type
-                            if msg_type == 'truck_arrived':
+                            if message.message_type == 'truck_arrived':
                                 truck_id = content.get('truck_id')
                                 warehouse_id = content.get('warehouse_id')
                                 if truck_id and warehouse_id:
                                     self.amazon_communication.notify_truck_arrived(truck_id, warehouse_id)
                                     success = True
-                            
-                            elif msg_type == 'package_delivered':
+
+                            elif message.message_type == 'package_delivered':
                                 package_id = content.get('package_id')
                                 truck_id = content.get('truck_id')
                                 x = content.get('x')
@@ -1303,43 +963,88 @@ class WorldConnection:
                                 if package_id and truck_id and x is not None and y is not None:
                                     self.amazon_communication.notify_package_delivered(package_id, truck_id, x, y)
                                     success = True
-                            
+
                             # Update message status
-                            cursor.execute(
-                                """
-                                UPDATE amazon_message
-                                SET status = %s, completed_at = NOW()
-                                WHERE id = %s
-                                """,
-                                ('success' if success else 'failed', msg_id)
-                            )
-                            
-                        except Exception as e:
-                            logger.error(f"Error processing Amazon message: {e}")
-                            cursor.execute(
-                                """
-                                UPDATE amazon_message
-                                SET status = 'failed', error_message = %s, updated_at = NOW()
-                                WHERE id = %s
-                                """,
-                                (str(e), msg_id)
-                            )
-                    
-                    conn.commit()
-                
-                # Sleep before checking again
+                            message.status = 'success' if success else 'failed'
+                            message.completed_at = timezone.now()
+                            message.save()
+
+                    except Exception as e:
+                        logger.error(f"Error processing Amazon message {message.id}: {e}")
+                        # If something goes wrong inside processing, fail this message
+                        message.status = 'failed'
+                        message.error_message = str(e)
+                        message.updated_at = timezone.now()
+                        message.save()
+
                 time.sleep(5)
-                
+
             except Exception as e:
                 logger.error(f"Error in Amazon message processor: {e}")
                 time.sleep(5)
-                
-            finally:
-                if conn:
-                    self.db_pool.putconn(conn)
-        
+
         logger.info("Amazon message processor stopped")
-    
+
+    def query_truck(self, truck_id):
+        """Send a query to get the status of a specific truck."""
+        try:
+            command = ups_pb2.UCommands()
+            query = command.queries.add()
+            query.truckid = truck_id
+            query.seqnum = self._get_next_seq_num()
+
+            if self.acks:
+                command.acks.extend(self.acks)
+                self.acks.clear()
+
+            success = self._send_message(command)
+            if success:
+                logger.info(f"Sent truck status query for Truck {truck_id} (seqnum: {query.seqnum})")
+            return success
+        except Exception as e:
+            logger.error(f"Error sending truck query for Truck {truck_id}: {e}")
+            return False
+
+    def send_delivery(self, truck_id, package_locations):
+        """
+        Send a delivery command to the world for a truck.
+        
+        Args:
+            truck_id: ID of the truck.
+            package_locations: list of dicts, each dict has 'package_id', 'x', 'y'
+        
+        Example of package_locations:
+            [
+                {"package_id": 10001, "x": 10, "y": 20},
+                {"package_id": 10002, "x": 12, "y": 22},
+            ]
+        """
+        with self.lock:
+            try:
+                command = ups_pb2.UCommands()
+                delivery = command.deliveries.add()
+                delivery.truckid = truck_id
+                delivery.seqnum = self._get_next_seq_num()
+                
+                for pkg in package_locations:
+                    loc = delivery.packages.add()
+                    loc.packageid = int(pkg["package_id"])
+                    loc.x = int(pkg["x"])
+                    loc.y = int(pkg["y"])
+                
+                if self.acks:
+                    command.acks.extend(self.acks)
+                    self.acks.clear()
+                
+                success = self._send_message(command)
+                if success:
+                    logger.info(f"Sent delivery command: Truck {truck_id} to deliver {len(package_locations)} packages (seqnum: {delivery.seqnum})")
+                return success
+
+            except Exception as e:
+                logger.error(f"Error sending delivery command for Truck {truck_id}: {e}")
+                return False
+
     def start(self):
         """Start all background threads for processing"""
         # Start response processor
