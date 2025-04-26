@@ -75,6 +75,7 @@ class WorldState(models.Model):
     world_id = models.BigIntegerField(unique=True)
     sim_speed = models.IntegerField(default=100)
     connected_at = models.DateTimeField(auto_now_add=True)
+    is_connected = models.BooleanField(default=False)
 
     class Meta:
         db_table = 'world_state'  
@@ -90,7 +91,7 @@ class SequenceNum(models.Model):
         db_table = 'sequence_num'
 
 
-class AmazonMessage(models.Model):
+class AmazonMessage(models.Model): # need to send to amazon
     id = models.AutoField(primary_key=True)  
     message_type = models.CharField(max_length=50)
     message_content = models.JSONField()
@@ -113,14 +114,18 @@ class CommandRetryQueue(models.Model):
         db_table = 'command_retry_queue'
 
 
-class CommandLog(models.Model):
+# creation needs: seq_num, command_type, command_data
+class CommandLog(models.Model): # request from amazon
     id = models.AutoField(primary_key=True)  
     seq_num = models.BigIntegerField()
-    command_type = models.CharField(max_length=20)
+    command_type = models.CharField(max_length=20) # 'pickup', 'delivery', 'query'
     command_data = models.JSONField()
-    created_at = models.DateTimeField()
-    acknowledged_at = models.DateTimeField(null=True, blank=True)
-    retry_count = models.IntegerField(default=0)
+    status = models.CharField(max_length=20, default='pending')  #pending, processing, success, failed // failed resent?
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    acknowledged_at = models.DateTimeField(null=True, blank=True) #completed
+    error_message = models.TextField(null=True, blank=True) #
+    retry_count = models.IntegerField(default=0) #
 
     class Meta:
         db_table = 'command_logs'

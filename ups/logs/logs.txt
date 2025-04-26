@@ -1,0 +1,52 @@
+2025-04-26 22:41:16,194 - ups_daemon - INFO - Try to start UPS Daemon
+2025-04-26 22:41:16,195 - world_connection - INFO - World connection init started
+2025-04-26 22:41:16,195 - world_connection - INFO - World connection init finished
+2025-04-26 22:41:16,195 - world_connection - INFO - World connection set amazon communication
+2025-04-26 22:41:16,196 - ups_daemon - INFO - Connect to a random new world, world ID: None
+2025-04-26 22:41:16,196 - world_connection - INFO - Connected to world simulator at 67.159.68.217:12345
+2025-04-26 22:41:16,196 - world_connection - INFO - Called send message
+2025-04-26 22:41:16,197 - world_connection - INFO - Finished sending
+2025-04-26 22:41:16,197 - world_connection - INFO - Sent UConnect message to world
+2025-04-26 22:41:16,211 - world_connection - INFO - Successfully connected to world 56
+2025-04-26 22:41:16,217 - django.utils.autoreload - INFO - Watching for file changes with StatReloader
+2025-04-26 22:41:16,255 - world_connection - INFO - Saved 5 trucks to database for world 56
+2025-04-26 22:41:16,260 - world_connection - INFO - Starting world response processor
+2025-04-26 22:41:16,261 - world_connection - INFO - Starting retry queue processor
+2025-04-26 22:41:16,262 - world_connection - INFO - Starting command queue processor
+2025-04-26 22:41:16,263 - world_connection - INFO - All background processors for world connection started
+2025-04-26 22:41:16,263 - amazon_comm - INFO - Start the Amazon communication
+2025-04-26 22:41:16,264 - ups_daemon - INFO - 启动卡车分配循环
+2025-04-26 22:41:16,265 - ups_daemon - INFO - 启动主循环
+2025-04-26 22:41:16,265 - ups_daemon - INFO - UPS daemon started successfully, world id: 56)
+2025-04-26 22:45:53,884 - amazon_comm - INFO - Received request_pickup request from Amazon (ID: f659d77e-be41-4680-91f0-a08905b66401)
+2025-04-26 22:45:59,868 - amazon_comm - INFO - Received package_ready request from Amazon (ID: 25b3ff80-ac74-4182-9f1b-b98bf1de0e57)
+2025-04-26 22:45:59,882 - amazon_comm - INFO - Package UPS174570755383D9DA6D updated: created -> waiting_for_pickup
+2025-04-26 22:46:01,308 - ups_daemon - INFO - Truck 1 assigned to created package UPS174570755383D9DA6D
+2025-04-26 22:46:01,311 - ups_daemon - INFO - Has ready package to send
+2025-04-26 22:46:01,312 - world_connection - INFO - Called send_pickup
+2025-04-26 22:46:01,312 - world_connection - INFO - into next
+2025-04-26 22:46:01,312 - world_connection - INFO - Called send message
+2025-04-26 22:46:01,312 - world_connection - INFO - Finished sending
+2025-04-26 22:46:01,312 - world_connection - INFO - Sent pickup command: Truck 1 to Warehouse 1 (seqnum: 1)
+2025-04-26 22:46:01,314 - ups_daemon - INFO - success sending pickup, now modifying package and trucks
+2025-04-26 22:46:01,316 - ups_daemon - INFO - Sent pickup command for truck 1 to warehouse 1 for package UPS174570755383D9DA6D
+2025-04-26 22:46:04,416 - world_connection - ERROR - Error from world: error: warehouse id/product_id/package id/truck id in certain world and warehouse(if product_id) does not exist (Original seqnum: 1)
+2025-04-26 22:46:04,425 - world_connection - ERROR - Error handling world error (ORM version): ErrorLog() got an unexpected keyword argument 'seq_num'
+2025-04-26 22:46:04,432 - world_connection - INFO - Called send message
+2025-04-26 22:46:04,433 - world_connection - INFO - Finished sending
+2025-04-26 22:51:06,946 - ups_daemon - INFO - 查询长时间无更新的卡车 1
+2025-04-26 22:51:06,947 - world_connection - INFO - into next
+2025-04-26 22:51:06,947 - world_connection - INFO - Called send message
+2025-04-26 22:51:06,947 - world_connection - INFO - Finished sending
+2025-04-26 22:51:06,954 - world_connection - INFO - Sent truck status query for Truck 1 (seqnum: 2)
+2025-04-26 22:51:10,611 - world_connection - INFO - Truck Status: Truck 1 is 'IDLE' at (0, 0)
+2025-04-26 22:51:10,618 - world_connection - INFO - Called send message
+2025-04-26 22:51:10,618 - world_connection - INFO - Finished sending
+2025-04-26 22:56:17,271 - ups_daemon - INFO - 查询长时间无更新的卡车 1
+2025-04-26 22:56:17,272 - world_connection - INFO - into next
+2025-04-26 22:56:17,272 - world_connection - INFO - Called send message
+2025-04-26 22:56:17,272 - world_connection - INFO - Finished sending
+2025-04-26 22:56:17,275 - world_connection - INFO - Sent truck status query for Truck 1 (seqnum: 3)
+2025-04-26 22:56:22,798 - world_connection - INFO - Truck Status: Truck 1 is 'IDLE' at (0, 0)
+2025-04-26 22:56:22,804 - world_connection - INFO - Called send message
+2025-04-26 22:56:22,805 - world_connection - INFO - Finished sending

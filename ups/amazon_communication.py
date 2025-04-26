@@ -18,11 +18,11 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils.timezone import now
 
+logging.Formatter.converter = time.localtime
 logging.basicConfig (level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     # filename='/app/ups/logs/amazon_communication.log',  
                     filemode='a' )
-
 logger = logging.getLogger('amazon_comm') # amazon communication logger name
 
 class AmazonCommunication:
@@ -69,17 +69,21 @@ class AmazonCommunication:
         while self.running:
             try:
                 with transaction.atomic():
+                    # find pending amazon messages
                     messages = (
                         AmazonMessage.objects
                         .select_for_update(skip_locked=True)
-                        .filter(status='pending', created_at__lte=timezone.now())
+                        .filter(status='pending') #, created_at__lte=timezone.now()
                         .order_by('created_at')[:10]
                     )
 
                     for message in messages:
+                        logger.info("Processing Amazon message now")
+                        
                         message.status = 'processing'
                         message.save()
 
+                        # send to amazon
                         success = self._send_message_to_amazon(
                             message.message_type,
                             message.message_content
@@ -857,7 +861,7 @@ class AmazonCommunication:
             dict: Formatted response message
         """
         response = {
-            "action": f"{action}_response",
+            "action": f"{action}",
             "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             "message_id": str(uuid.uuid4()),
             "in_response_to": in_response_to,

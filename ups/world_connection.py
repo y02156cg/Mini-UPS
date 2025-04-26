@@ -16,12 +16,38 @@ from django.db import transaction
 
 
 # Configure logging
+logging.Formatter.converter = time.localtime
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     filename='/app/ups/logs/logs.txt',  
                     filemode='a' )
 logger = logging.getLogger('world_connection')
 
+def update_world_connected_status(world_id, is_connected):
+    """
+    根据 world_id 更新 WorldState 的 is_connected 字段。
+    
+    Args:
+        world_id (int): 要更新的世界 ID
+        is_connected (bool): 要设置的连接状态
+
+    Returns:
+        bool: True 更新成功，False 更新失败
+    """
+    try:
+        with transaction.atomic():
+            world_state = WorldState.objects.filter(world_id=world_id).first()
+            if world_state:
+                world_state.is_connected = is_connected
+                world_state.save()
+                return True
+            else:
+                logger.warning(f"WorldState with world_id {world_id} not found")
+                return False
+    except Exception as e:
+        logger.error(f"Error updating is_connected for world_id {world_id}: {e}")
+        return False
+    
 class WorldConnection:
     """
     Handles communication with the world simulator using Protocol Buffers.
@@ -36,6 +62,7 @@ class WorldConnection:
             port: Port of the world simulator
             db_pool: Database connection pool
         """
+        logger.info("World connection init started")
         self.host = host
         self.port = port
         self.db_pool = db_pool
@@ -46,9 +73,11 @@ class WorldConnection:
         self.acks = set()
         self.lock = threading.Lock()
         self.amazon_communication = None  # Set later
+        logger.info("World connection init finished")
     
     def set_amazon_communication(self, amazon_communication):
         """Set the Amazon communication handler"""
+        logger.info("World connection set amazon communication")
         self.amazon_communication = amazon_communication
     
     def connect(self, world_id=None, trucks=None):
@@ -64,7 +93,8 @@ class WorldConnection:
         """
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.connect((self.host, self.port))
+            self.socket.connect((self.host, self.port)) # If fail, exception
+
             logger.info(f"Connected to world simulator at {self.host}:{self.port}")
             
             # Create UConnect message
@@ -138,6 +168,7 @@ class WorldConnection:
                     self.socket.close()
                 
                 self.connected = False
+                update_world_connected_status(self.world_id, False)
                 logger.info("Disconnected from world simulator")
                 
             except Exception as e:
@@ -169,9 +200,9 @@ class WorldConnection:
     
     def _get_next_seq_num(self):
         """Get the next sequence number for commands"""
-        with self.lock:
-            self.seq_num += 1
-            return self.seq_num
+        logger.info("into next")
+        self.seq_num += 1
+        return self.seq_num
     
     def send_pickup(self, truck_id, warehouse_id):
         """
@@ -184,22 +215,24 @@ class WorldConnection:
         Returns:
             bool: True if successful, False otherwise
         """
+        logger.info("Called send_pickup")
         with self.lock:
             try:
                 # Create UCommands message
                 command = ups_pb2.UCommands()
-                
+
                 # Create UGoPickup message
                 pickup = command.pickups.add()
                 pickup.truckid = truck_id
                 pickup.whid = warehouse_id
                 pickup.seqnum = self._get_next_seq_num()
                 
+
                 # Add acknowledgments
                 if self.acks:
                     command.acks.extend(self.acks)
                     self.acks.clear()
-                
+
                 # Send command to world
                 success = self._send_message(command)
                 
@@ -214,10 +247,21 @@ class WorldConnection:
                             'truck_id': truck_id,
                             'warehouse_id': warehouse_id
                         },
+                        status='success',
                         created_at=timezone.now()
                     )
                 else:
-                    logger.info(f"Sent pickup command sending fails: Truck {truck_id} to Warehouse {warehouse_id} (seqnum: {pickup.seqnum})")
+                    logger.info(f"Pickup command sending fails: Truck {truck_id} to Warehouse {warehouse_id} (seqnum: {pickup.seqnum})")
+                    CommandLog.objects.create(
+                        seq_num=pickup.seqnum,
+                        command_type='pickup',
+                        command_data={
+                            'truck_id': truck_id,
+                            'warehouse_id': warehouse_id
+                        },
+                        status='pending',
+                        created_at=timezone.now()
+                    )
                 return success
             except Exception as e:
                 logger.error(f"Error sending pickup command to world simulator: {e}")
@@ -233,6 +277,7 @@ class WorldConnection:
         Returns:
             bool: True if successful, False otherwise
         """
+        logger.info("Called send message")
         try:
             if not self.socket:
                 logger.error("Socket not connected")
@@ -259,11 +304,13 @@ class WorldConnection:
             self.socket.sendall(bytes(size_bytes))
             self.socket.sendall(serialized)
             
+            logger.info("Finished sending")
             return True
             
         except Exception as e:
             logger.error(f"Error sending message to world: {e}")
             self.connected = False
+            update_world_connected_status(self.world_id, False)
             return False
     
     def _receive_message(self, message_type):
@@ -278,7 +325,7 @@ class WorldConnection:
         """
         try:
             if not self.socket:
-                logger.error("Socket not connected")
+                logger.error("Socket not connected to world")
                 return None
             
             # Read the size varint
@@ -288,6 +335,7 @@ class WorldConnection:
                 if not byte:
                     logger.error("Connection closed while reading size")
                     self.connected = False
+                    update_world_connected_status(self.world_id, False)
                     return None
                 
                 size_bytes.append(byte[0])
@@ -306,6 +354,7 @@ class WorldConnection:
                 if not chunk:
                     logger.error("Connection closed while reading message")
                     self.connected = False
+                    update_world_connected_status(self.world_id, False)
                     return None
                 data.extend(chunk)
             
@@ -318,6 +367,7 @@ class WorldConnection:
         except Exception as e:
             logger.error(f"Error receiving message from world: {e}")
             self.connected = False
+            update_world_connected_status(self.world_id, False)
             return None
     
     def process_responses(self):
@@ -864,9 +914,9 @@ class WorldConnection:
         while self.connected:
             try:
                 # Fetch a pending command ordered by priority desc, created_at asc
-                command_entry = CommandQueue.objects.filter(
+                command_entry = CommandLog.objects.filter(
                     status='pending'
-                ).order_by('-priority', 'created_at').first()
+                ).order_by('created_at').first()
 
                 if command_entry:
                     try:
@@ -900,7 +950,7 @@ class WorldConnection:
 
                             # Update status based on success
                             command_entry.status = 'success' if success else 'failed'
-                            command_entry.completed_at = timezone.now()
+                            command_entry.updated_at = timezone.now()
                             command_entry.save()
 
                             logger.info(f"Processed command {command_entry.id} ({command_type}): {'Success' if success else 'Failed'}")
@@ -920,90 +970,111 @@ class WorldConnection:
 
         logger.info("Command queue processor stopped")
     
-    def process_amazon_messages(self):
-        """Process pending messages to Amazon using ORM."""
-        logger.info("Starting Amazon message processor")
+    # def process_amazon_messages(self):
+    #     """Process pending messages to Amazon"""
+    #     logger.info("Starting Amazon message processor")
 
-        while self.connected:
-            if not self.amazon_communication:
-                logger.warning("Amazon communication not configured, waiting...")
-                time.sleep(10)
-                continue
+    #     while self.connected:
+    #         if not self.amazon_communication:
+    #             logger.warning("Amazon communication not configured, waiting...")
+    #             time.sleep(10)
+    #             continue
 
-            try:
-                # Fetch pending messages (limit 10)
-                messages = AmazonMessage.objects.filter(
-                    status='pending'
-                ).order_by('created_at')[:10]
+    #         try:
+    #             # Fetch pending messages (limit 10)
+    #             messages = AmazonMessage.objects.filter(
+    #                 status='pending'
+    #             ).order_by('created_at')[:10]
 
-                for message in messages:
-                    try:
-                        with transaction.atomic():
-                            # Mark as processing
-                            message.status = 'processing'
-                            message.updated_at = timezone.now()
-                            message.save()
+    #             for message in messages:
+    #                 try:
+    #                     with transaction.atomic():
+    #                         # Mark as processing
+    #                         message.status = 'processing'
+    #                         message.updated_at = timezone.now()
+    #                         message.save()
 
-                            content = message.message_content
-                            success = False
+    #                         content = message.message_content
+    #                         success = False
 
-                            # Process based on message type
-                            if message.message_type == 'truck_arrived':
-                                truck_id = content.get('truck_id')
-                                warehouse_id = content.get('warehouse_id')
-                                if truck_id and warehouse_id:
-                                    self.amazon_communication.notify_truck_arrived(truck_id, warehouse_id)
-                                    success = True
+    #                         # Process based on message type
+    #                         if message.message_type == 'truck_arrived':
+    #                             truck_id = content.get('truck_id')
+    #                             warehouse_id = content.get('warehouse_id')
+    #                             if truck_id and warehouse_id:
+    #                                 self.amazon_communication.notify_truck_arrived(truck_id, warehouse_id)
+    #                                 success = True
 
-                            elif message.message_type == 'package_delivered':
-                                package_id = content.get('package_id')
-                                truck_id = content.get('truck_id')
-                                x = content.get('x')
-                                y = content.get('y')
-                                if package_id and truck_id and x is not None and y is not None:
-                                    self.amazon_communication.notify_package_delivered(package_id, truck_id, x, y)
-                                    success = True
+    #                         elif message.message_type == 'package_delivered':
+    #                             package_id = content.get('package_id')
+    #                             truck_id = content.get('truck_id')
+    #                             x = content.get('x')
+    #                             y = content.get('y')
+    #                             if package_id and truck_id and x is not None and y is not None:
+    #                                 self.amazon_communication.notify_package_delivered(package_id, truck_id, x, y)
+    #                                 success = True
 
-                            # Update message status
-                            message.status = 'success' if success else 'failed'
-                            message.completed_at = timezone.now()
-                            message.save()
+    #                         # Update message status
+    #                         message.status = 'success' if success else 'failed'
+    #                         message.completed_at = timezone.now()
+    #                         message.save()
 
-                    except Exception as e:
-                        logger.error(f"Error processing Amazon message {message.id}: {e}")
-                        # If something goes wrong inside processing, fail this message
-                        message.status = 'failed'
-                        message.error_message = str(e)
-                        message.updated_at = timezone.now()
-                        message.save()
+    #                 except Exception as e:
+    #                     logger.error(f"Error processing Amazon message {message.id}: {e}")
+    #                     # If something goes wrong inside processing, fail this message
+    #                     message.status = 'failed'
+    #                     message.error_message = str(e)
+    #                     message.updated_at = timezone.now()
+    #                     message.save()
 
-                time.sleep(5)
+    #             time.sleep(5)
 
-            except Exception as e:
-                logger.error(f"Error in Amazon message processor: {e}")
-                time.sleep(5)
+    #         except Exception as e:
+    #             logger.error(f"Error in Amazon message processor: {e}")
+    #             time.sleep(5)
 
-        logger.info("Amazon message processor stopped")
+    #     logger.info("Amazon message processor stopped")
 
     def query_truck(self, truck_id):
         """Send a query to get the status of a specific truck."""
-        try:
-            command = ups_pb2.UCommands()
-            query = command.queries.add()
-            query.truckid = truck_id
-            query.seqnum = self._get_next_seq_num()
+        with self.lock:
+            try:
+                command = ups_pb2.UCommands()
+                query = command.queries.add()
+                query.truckid = truck_id
+                query.seqnum = self._get_next_seq_num()
 
-            if self.acks:
-                command.acks.extend(self.acks)
-                self.acks.clear()
+                if self.acks:
+                    command.acks.extend(self.acks)
+                    self.acks.clear()
 
-            success = self._send_message(command)
-            if success:
-                logger.info(f"Sent truck status query for Truck {truck_id} (seqnum: {query.seqnum})")
-            return success
-        except Exception as e:
-            logger.error(f"Error sending truck query for Truck {truck_id}: {e}")
-            return False
+                success = self._send_message(command)
+                if success:
+                    CommandLog.objects.create(
+                        seq_num=query.seqnum,
+                        command_type='query',
+                        command_data={
+                            'truck_id': truck_id
+                        },
+                        status='success',
+                        retry_count=0
+                    )
+                    logger.info(f"Sent truck status query for Truck {truck_id} (seqnum: {query.seqnum})")
+                else:
+                    CommandLog.objects.create(
+                        seq_num=query.seqnum,
+                        command_type='query',
+                        command_data={
+                            'truck_id': truck_id
+                        },
+                        status='pending',
+                        retry_count=0
+                    )
+                    logger.info(f"Fail sending truck status query for Truck {truck_id} (seqnum: {query.seqnum})")
+                return success
+            except Exception as e:
+                logger.error(f"Error sending truck query for Truck {truck_id}: {e}")
+                return False
 
     def send_delivery(self, truck_id, package_locations):
         """
@@ -1038,7 +1109,29 @@ class WorldConnection:
                 
                 success = self._send_message(command)
                 if success:
+                    CommandLog.objects.create(
+                        seq_num=delivery.seqnum,
+                        command_type='delivery',
+                        command_data={
+                            'truck_id': truck_id,
+                            'package_locations': package_locations
+                        },
+                        status='success',
+                        created_at=timezone.now()
+                    )
                     logger.info(f"Sent delivery command: Truck {truck_id} to deliver {len(package_locations)} packages (seqnum: {delivery.seqnum})")
+                else:
+                    CommandLog.objects.create(
+                        seq_num=delivery.seqnum,
+                        command_type='delivery',
+                        command_data={
+                            'truck_id': truck_id,
+                            'package_locations': package_locations
+                        },
+                        status='pending',
+                        created_at=timezone.now()
+                    )
+                    logger.info(f"Fail sending delivery command: Truck {truck_id} to deliver {len(package_locations)} packages (seqnum: {delivery.seqnum})")
                 return success
 
             except Exception as e:
@@ -1063,16 +1156,16 @@ class WorldConnection:
         self.command_thread.start()
         
         # Start Amazon message processor
-        self.amazon_thread = threading.Thread(target=self.process_amazon_messages)
-        self.amazon_thread.daemon = True
-        self.amazon_thread.start()
+        # self.amazon_thread = threading.Thread(target=self.process_amazon_messages)
+        # self.amazon_thread.daemon = True
+        # self.amazon_thread.start()
         
-        # Start heartbeat sender
-        self.heartbeat_thread = threading.Thread(target=self.send_heartbeat)
-        self.heartbeat_thread.daemon = True
-        self.heartbeat_thread.start()
+        # # Start heartbeat sender
+        # self.heartbeat_thread = threading.Thread(target=self.send_heartbeat)
+        # self.heartbeat_thread.daemon = True
+        # self.heartbeat_thread.start()
         
-        logger.info("All background processors started")
+        logger.info("All background processors for world connection started")
 
     def stop(self):
         """Stop the connection and all background threads"""

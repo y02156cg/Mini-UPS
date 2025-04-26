@@ -49,35 +49,31 @@ class CoreConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'core'
 
-
-
     def ready(self):
-        from ups_daemon import UPSDaemon
-        if 'runserver' not in sys.argv:
-            return 
-        
-        world_host = os.environ.get('WORLD_HOST', 'localhost')
-        world_port = int(os.environ.get('WORLD_PORT', 12345))
-        amazon_url = os.environ.get('AMAZON_URL', 'http://amazon-service:8080')
-
-        db_config = {
-            'dbname': os.environ.get('DB_NAME', 'ups_db'),
-            'user': os.environ.get('DB_USER', 'postgres'),
-            'password': os.environ.get('DB_PASSWORD', 'postgres_password'),
-            'host': os.environ.get('DB_HOST', 'ups-db'),
-            'port': int(os.environ.get('DB_PORT', 5432)),
-        }
-
-        wait_for_db_ready(db_config, required_tables=['packages', 'items', 'notifications','trucks','warehouses','error_logs','world_state','sequence_num','amazon_messages'])
-
-        # daemon = UPSDaemon(world_host, world_port, amazon_url, db_config)
-
-        # 启动 daemon 线程
-        # t = threading.Thread(target=daemon.start, kwargs={"world_id": None}, daemon=True)
-        # t.start()
-        if not hasattr(self, '_daemon_started'):
+        if 'runserver' in sys.argv and os.environ.get('RUN_MAIN') == 'true':
+            from ups_daemon import UPSDaemon
+            if hasattr(self, '_daemon_started'):
+                return  # 已经启动过了，避免重复
             self._daemon_started = True
+
+            world_host = os.environ.get('WORLD_HOST', '67.159.68.217') # local
+            world_port = int(os.environ.get('WORLD_PORT', 12345))
+            amazon_url = os.environ.get('AMAZON_URL', 'http://192.168.0.190:8080') # zack组
+            world_id = os.environ.get('WORLD_ID') 
+            if world_id is not None:
+                world_id = int(world_id)
+            db_config = {
+                'dbname': os.environ.get('DB_NAME', 'ups_db'),
+                'user': os.environ.get('DB_USER', 'postgres'),
+                'password': os.environ.get('DB_PASSWORD', 'postgres_password'),
+                'host': os.environ.get('DB_HOST', 'ups-db'),
+                'port': int(os.environ.get('DB_PORT', 5432)),
+            }
+
+            wait_for_db_ready(db_config, required_tables=['packages', 'items', 'notifications','trucks','warehouses','error_logs','world_state','sequence_num','amazon_messages'])
+
             daemon = UPSDaemon(world_host, world_port, amazon_url, db_config)
 
-            threading.Thread(target=daemon.start, kwargs={"world_id": None}, daemon=True).start()
+            # create a new thread for ups daemon running start(), as daemon
+            threading.Thread(target=daemon.start, kwargs={"world_id": world_id}, daemon=True).start()
 

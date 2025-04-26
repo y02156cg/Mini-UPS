@@ -18,6 +18,7 @@ from django.db.models import Q
 
 
 # 配置日志
+logging.Formatter.converter = time.localtime
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     # filename='/app/ups/logs/ups_daemon.log',  
@@ -77,10 +78,7 @@ class UPSDaemon:
             bool: 成功返回True，失败返回False
         """
         try:
-            logger.info("启动UPS守护进程...")
-            
-            # 初始化数据库
-            # self.initialize_database()
+            logger.info("Try to start UPS Daemon")
             
             # 创建WorldConnection
             self.world_connection = WorldConnection(
@@ -103,55 +101,47 @@ class UPSDaemon:
             from core import global_context
             global_context.amazon_communication_instance = self.amazon_communication
 
-            # 连接到世界模拟器
+            trucks = []
+            for i in range(num_trucks):
+                trucks.append({
+                    'id': i + 1,
+                    'x': 0,  # 初始位置
+                    'y': 0
+                })
+
             if world_id:
-                # 连接到已存在的世界
-                success = self.world_connection.connect(world_id)
-                if not success:
-                    logger.error(f"连接到世界 {world_id} 失败")
-                    return False
-                self.world_id = world_id
+                logger.info(f"Provided world id:{world_id}")
             else:
-                # 创建新世界
-                trucks = []
-                for i in range(num_trucks):
-                    trucks.append({
-                        'id': i + 1,
-                        'x': 0,  # 初始位置
-                        'y': 0
-                    })
+                logger.info(f"Connect to a random new world, world ID: {self.world_id}")
+
+            if world_id is not None and WorldState.objects.filter(world_id=world_id).exists(): # already connected in the past
+                success = self.world_connection.connect(world_id=world_id)
+            else:
+                success = self.world_connection.connect(world_id=world_id, trucks=trucks)
+
+            if not success:
+                logger.error(f"Fail to connect to world id {world_id} ")
+                return False
+            self.world_id = self.world_connection.world_id # receive world id from world simulator 
                 
-                success = self.world_connection.connect(world_id=None, trucks=trucks)
-                if not success:
-                    logger.error("创建新世界失败")
-                    return False
-                
-                self.world_id = self.world_connection.world_id
-                logger.info(f"创建了新世界，ID: {self.world_id}")
-                
-                # 创建世界状态记录
-                conn = self.db_pool.getconn()
-                try:
+            # Create world state record
+            try:
+                with transaction.atomic():
                     WorldState.objects.get_or_create(
                         world_id=self.world_id,
                         defaults={
-                            "sim_speed": 100
-                        }
+                            "sim_speed": 100 # May not true []
+                        },
+                        is_connected=True
                     )
-                except Exception as e:
-                    logger.error(f"创建世界状态记录时出错: {e}")
-                    if conn:
-                        conn.rollback()
-                finally:
-                    self.db_pool.putconn(conn)
+            except Exception as e:
+                logger.error(f"Fail to record world state into databses: {e}")
             
-            # 启动通信处理
+            # start running
             self.running = True
             
-            # 启动WorldConnection响应处理线程
-            world_thread = threading.Thread(target=self.world_connection.process_responses)
-            world_thread.daemon = True
-            world_thread.start()
+            # 启动WorldConnection处理线程
+            self.world_connection.start()
             
             # 启动AmazonCommunication处理线程
             self.amazon_communication.start()
@@ -166,11 +156,11 @@ class UPSDaemon:
             self.main_thread.daemon = True
             self.main_thread.start()
             
-            logger.info(f"UPS守护进程已启动 (世界ID: {self.world_id})")
+            logger.info(f"UPS daemon started successfully, world id: {self.world_id})")
             return True
             
         except Exception as e:
-            logger.error(f"启动UPS守护进程时出错: {e}")
+            logger.error(f"Fail to start UPS daemon: {e}")
             self.stop()
             return False
     
@@ -257,14 +247,16 @@ class UPSDaemon:
 
             # 2. Send trucks to get pickup_assigned packages (UGoPickup)
             ready_packages = Package.objects.filter(
-                status='pickup_assigned', truck_id__isnull=False
+                status='pickup_assigned'
             )
 
             for package in ready_packages:
+                logger.info("Has ready package to send")
                 truck = package.truck
                 if truck and truck.status == 'idle':
                     success = self.world_connection.send_pickup(truck.id, package.warehouse_id)
                     if success:
+                        logger.info("success sending pickup, now modifying package and trucks")
                         with transaction.atomic():
                             package.status = 'ready_for_pickup'
                             package.updated_at = timezone.now()
