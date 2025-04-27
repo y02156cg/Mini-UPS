@@ -58,6 +58,7 @@ class Notification(models.Model):
     message = models.TextField()
     read = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'notifications' 

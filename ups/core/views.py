@@ -208,7 +208,7 @@ def redirect_package(request, tracking_number):
             return redirect('dashboard')
 
         if package.status in ['delivering', 'delivered']:
-            messages.error(request, 'This package has already been delivered')
+            messages.error(request, 'Redirection Failed: This package has already been delivered')
             return redirect('package_details', tracking_number=tracking_number)
 
         # Update package coordinate
@@ -608,20 +608,11 @@ def notification_settings(request):
         for notification_type in ['delivery', 'pickup', 'status_change', 'truck_arrival', 'system']:
             enabled = request.POST.get(f'{notification_type}_enabled') == 'on'
             
-            # Get threshold for delivery notifications
-            threshold_minutes = 30  # Default
-            if notification_type == 'delivery':
-                try:
-                    threshold_minutes = int(request.POST.get('delivery_threshold', 30))
-                except ValueError:
-                    threshold_minutes = 30
-            
             # Update or create preference
             notification_manager.register_notification_preference(
                 user=request.user, 
                 notification_type=notification_type,
                 enabled=enabled,
-                threshold_minutes=threshold_minutes
             )
         
         # Update email
@@ -638,7 +629,6 @@ def notification_settings(request):
     for pref in NotificationPreference.objects.filter(user=request.user):
         preferences[pref.notification_type] = {
             'enabled': pref.enabled,
-            'threshold_minutes': pref.threshold_minutes
         }
     
     # Recent notifications

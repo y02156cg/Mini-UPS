@@ -1,72 +1,90 @@
-<!-- dashboard.html -->
 {% extends "core/base.html" %}
 
-{% block title %}Your Dashboard - UPS Mini System{% endblock %}
+{% block title %}Your Dashboard - Mini-UPS{% endblock %}
 
 {% block content %}
-<h1>Your Dashboard</h1>
+<div class="container mt-4">
 
-<p><a href="{% url 'dashboard' %}">Dashboard</a> | <a href="{% url 'home' %}">Home</a> | 
-<a href="{% url 'delivery_map' %}">Delivery Map</a> | 
-<a href="{% url 'notification_settings' %}">Notification Settings</a></p>
+    <h1 class="mb-4">Your Dashboard</h1>
 
-<h2>Notifications</h2>
-{% if notifications %}
-    <ul>
-        {% for note in notifications %}
-            <li>
-                {% if not note.read %}<strong>{% endif %}
-                {{ note.message }}
-                {% if not note.read %}</strong>{% endif %}
-                <small>({{ note.created_at|date:"M d, Y H:i" }})</small>
-            </li>
-        {% endfor %}
-    </ul>
-{% else %}
-    <p>No new notifications.</p>
-{% endif %}
+    <!-- Navigation Buttons -->
+    <div class="mb-4">
+        <div class="btn-group" role="group" aria-label="Dashboard Navigation">
+            <a class="btn btn-outline-primary" href="{% url 'dashboard' %}">Dashboard</a>
+            <a class="btn btn-outline-primary" href="{% url 'home' %}">Home</a>
+            <a class="btn btn-outline-primary" href="{% url 'delivery_map' %}">Delivery Map</a>
+            <a class="btn btn-outline-primary" href="{% url 'notification_settings' %}">Notification Settings</a>
+        </div>
+    </div>
 
-<h2>Your Packages</h2>
-{% if packages %}
-    <table class="table table-bordered">
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Status</th>
-                <th>Destination</th>
-                <th>Created</th>
-                <th>Truck</th>
-                <th>Truck Status</th>
-                <th>Details</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for p in packages %}
-                <tr>
-                    <td>{{ p.id }}</td>
-                    <td>
-                        <span class="package-status status-{{ p.status|slugify }}">
-                            {{ p.status }}
-                        </span>
-                    </td>
-                    <td>({{ p.destination_x }}, {{ p.destination_y }})</td>
-                    <td>{{ p.created_at|date:"M d, Y H:i" }}</td>
-                    <td>{{ p.truck_id|default:"N/A" }}</td>
-                    <td>
-                        {% if p.truck_status %}
-                            <span class="truck-status truck-{{ p.truck_status|slugify }}">
-                                {{ p.truck_status }}
-                            </span>
-                        {% else %}
-                            N/A
-                        {% endif %}
-                    </td>
-                    <td><a href="{% url 'package_details' tracking_number=p.id %}">View</a></td>
-                </tr>
+    <!-- Notifications Section -->
+    <h2>Notifications</h2>
+    {% if notifications %}
+        <ul class="list-group mb-4">
+            {% for note in notifications %}
+                <li class="list-group-item {% if not note.read %}fw-bold{% endif %}">
+                    {{ note.message }}
+                    <small class="text-muted d-block">{{ note.created_at|date:"M d, Y H:i" }}</small>
+                </li>
             {% endfor %}
-        </tbody>
-    </table>
-{% else %}
-    <p>You don't have any packages yet.</p>
-{% endif %}
+        </ul>
+    {% else %}
+        <p class="text-muted mb-4">No new notifications.</p>
+    {% endif %}
+
+    <!-- Packages Section -->
+    <h2>Your Packages</h2>
+    {% if packages %}
+        <div class="table-responsive">
+            <table class="table table-bordered table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>ID</th>
+                        <th>Status</th>
+                        <th>Destination</th>
+                        <th>Created</th>
+                        <th>Truck</th>
+                        <th>Truck Status</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in packages %}
+                        <tr>
+                            <td>{{ p.id }}</td>
+                            <td>
+                                <span class="package-status status-{{ p.status|slugify }}">
+                                    {{ p.status }}
+                                </span>
+                            </td>
+                            <td>({{ p.destination_x }}, {{ p.destination_y }})</td>
+                            <td>{{ p.created_at|date:"M d, Y H:i" }}</td>
+                            <td>{{ p.truck_id|default:"N/A" }}</td>
+                            <td>
+                                {% if p.truck_status %}
+                                    <span class="truck-status truck-{{ p.truck_status|slugify }}">
+                                        {{ p.truck_status }}
+                                    </span>
+                                {% else %}
+                                    N/A
+                                {% endif %}
+                            </td>
+                            <td>
+                                <a class="btn btn-sm btn-outline-primary mb-1" href="{% url 'package_details' tracking_number=p.id %}">
+                                    View
+                                </a>
+                                <a class="btn btn-sm btn-outline-warning" href="{% url 'redirect_package' tracking_number=p.id %}">
+                                    Redirect
+                                </a>
+                            </td>
+                            
+                        </tr>
+                    {% endfor %}
+                </tbody>                
+            </table>
+        </div>
+    {% else %}
+        <p class="text-muted">You don't have any packages yet.</p>
+    {% endif %}
+</div>
 {% endblock %}

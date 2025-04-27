@@ -33,7 +33,7 @@ class NotificationManager:
         self.running = False
         logger.info("Notification manager stopped")
     
-    def register_notification_preference(self, user, notification_type, enabled=True, threshold_minutes=30):
+    def register_notification_preference(self, user, notification_type, enabled=True):
         """
         Register or update a user's notification preferences.
         
@@ -41,7 +41,6 @@ class NotificationManager:
             user: User instance
             notification_type: Type of notification (e.g., 'delivery', 'truck_arrival')
             enabled: Whether notifications are enabled
-            threshold_minutes: No longer used but kept for compatibility
             
         Returns:
             NotificationPreference: The created or updated preference
@@ -51,7 +50,6 @@ class NotificationManager:
             notification_type=notification_type,
             defaults={
                 'enabled': enabled,
-                'threshold_minutes': threshold_minutes  # Kept for backwards compatibility
             }
         )
         
