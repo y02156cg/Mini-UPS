@@ -35,4 +35,10 @@ urlpatterns = [
     path('api/amazon/', views.amazon_api, name='amazon_api'),  #
     path('api/truck/<int:truck_id>/', views.truck_status_api, name='truck_status_api'),
     path('api/package/<str:tracking_number>/', views.package_status_api, name='package_status_api'),
+
+    path('delivery-map/', views.delivery_map, name='delivery_map'),
+    path('api/map-data/', views.map_data_api, name='map_data_api'),
+    path('notifications/', views.notification_settings, name='notification_settings'),
+    path('api/notifications/', views.get_notifications, name='get_notifications'),
+    path('test-notification/', views.test_notification, name='test_notification'),
 ]
