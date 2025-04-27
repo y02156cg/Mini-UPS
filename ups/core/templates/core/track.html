@@ -1,39 +1,31 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Track Package - UPS Mini System</title>
-    <style>
-        form {
-            margin-top: 20px;
-        }
+<!-- track_package.html -->
+{% extends "core/base.html" %}
 
-        label, input {
-            display: block;
-            margin-bottom: 10px;
-        }
+{% block title %}Track Package - UPS Mini System{% endblock %}
 
-        input[type="text"] {
-            width: 300px;
-            padding: 6px;
-        }
+{% block content %}
+<h1>Track a Package</h1>
+<p><a href="{% url 'home' %}">Back to Home</a> | <a href="{% url 'dashboard' %}">Dashboard</a></p>
 
-        button {
-            padding: 6px 12px;
-        }
-    </style>
-</head>
-<body>
-    <h1>Track a Package</h1>
-
-    <form method="post">
-        {% csrf_token %}
-        <label for="tracking_number">Tracking Number:</label>
-        <input type="text" id="tracking_number" name="tracking_number" required>
-
-        <button type="submit">Track</button>
-    </form>
-
-    <p><a href="{% url 'home' %}">Back to Home</a></p>
-</body>
-</html>
+<div class="row justify-content-center mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="mb-0">Package Tracking</h2>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label for="tracking_number" class="form-label">Tracking Number:</label>
+                        <input type="text" class="form-control" id="tracking_number" name="tracking_number" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-search"></i> Track
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

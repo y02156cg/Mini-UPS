@@ -1,26 +1,35 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>UPS Mini System - Home</title>
-</head>
-<body>
-    <h1>Welcome to the UPS Mini System</h1>
+<!-- home.html -->
+{% extends "core/base.html" %}
 
-    {% if world_id %}
-        <p>Connected to World ID: <strong>{{ world_id }}</strong></p>
-    {% else %}
-        <p><strong>⚠ Not connected to any world</strong></p>
-    {% endif %}
+{% block title %}UPS Mini System - Home{% endblock %}
 
-    {% if is_authenticated %}
-        <p>You are logged in.</p>
-        <a href="{% url 'dashboard' %}">Go to Dashboard</a> |
-        <a href="{% url 'logout' %}">Logout</a>
-    {% else %}
-        <p>You are not logged in.</p>
-        <a href="{% url 'login' %}">Login</a> |
-        <a href="{% url 'register' %}">Register</a>
-    {% endif %}
-</body>
-</html>
+{% block content %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h2 class="mb-0">Welcome to the UPS Mini System</h2>
+    </div>
+    <div class="card-body">
+        {% if world_id %}
+            <p>Connected to World ID: <strong>{{ world_id }}</strong></p>
+        {% else %}
+            <div class="alert alert-warning">
+                <i class="fas fa-exclamation-triangle"></i> Not connected to any world
+            </div>
+        {% endif %}
+
+        {% if is_authenticated %}
+            <p>You are logged in.</p>
+            <div class="mt-3">
+                <a href="{% url 'dashboard' %}" class="btn btn-primary">Go to Dashboard</a>
+                <a href="{% url 'logout' %}" class="btn btn-outline-secondary ms-2">Logout</a>
+            </div>
+        {% else %}
+            <p>You are not logged in.</p>
+            <div class="mt-3">
+                <a href="{% url 'login' %}" class="btn btn-primary">Login</a>
+                <a href="{% url 'register' %}" class="btn btn-outline-primary ms-2">Register</a>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

@@ -1,81 +1,75 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Package Details - UPS Mini System</title>
-    <style>
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            margin-top: 16px;
-        }
+<!-- package_details.html -->
+{% extends "core/base.html" %}
 
-        th, td {
-            border: 1px solid #444;
-            padding: 8px;
-        }
+{% block title %}Package Details - UPS Mini System{% endblock %}
 
-        th {
-            background-color: #f0f0f0;
-        }
+{% block content %}
+<h1>Package Details</h1>
+<p><a href="{% url 'dashboard' %}">Back to Dashboard</a> | <a href="{% url 'home' %}">Home</a></p>
 
-        .info {
-            margin-bottom: 20px;
-        }
-
-        .actions {
-            margin-top: 20px;
-        }
-    </style>
-</head>
-<body>
-    <h1>Package Details</h1>
-
-    {% if package %}
-    <div class="info">
-        <p><strong>Tracking Number:</strong> {{ package.id }}</p>
-        <p><strong>Status:</strong> {{ package.status }}</p>
-        <p><strong>Owner:</strong> {{ package.username }}</p>
-        <p><strong>Destination:</strong> ({{ package.destination_x }}, {{ package.destination_y }})</p>
-        <p><strong>Created At:</strong> {{ package.created_at }}</p>
-        <p><strong>Updated At:</strong> {{ package.updated_at }}</p>
-
-        {% if package.truck_id %}
-            <p><strong>Truck ID:</strong> {{ package.truck_id }}</p>
-            <p><strong>Truck Status:</strong> {{ package.truck_status }}</p>
-            <p><strong>Truck Location:</strong> ({{ package.truck_x }}, {{ package.truck_y }})</p>
-        {% endif %}
+{% if package %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h2 class="mb-0">Tracking #{{ package.id }}</h2>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <p><strong>Status:</strong> 
+                        <span class="package-status status-{{ package.status|slugify }}">{{ package.status }}</span>
+                    </p>
+                    <p><strong>Owner:</strong> {{ package.user }}</p>
+                    <p><strong>Destination:</strong> ({{ package.destination_x }}, {{ package.destination_y }})</p>
+                </div>
+                <div class="col-md-6">
+                    <p><strong>Created At:</strong> {{ package.created_at|date:"M d, Y H:i" }}</p>
+                    <p><strong>Updated At:</strong> {{ package.updated_at|date:"M d, Y H:i" }}</p>
+                    {% if package.truck_id %}
+                        <p><strong>Truck ID:</strong> {{ package.truck_id }}</p>
+                        <p><strong>Truck Status:</strong> 
+                            <span class="truck-status truck-{{ package.truck_status|slugify }}">{{ package.truck_status }}</span>
+                        </p>
+                        <p><strong>Truck Location:</strong> ({{ package.truck_x }}, {{ package.truck_y }})</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
     </div>
-    {% else %}
-        <p>Package not found.</p>
-    {% endif %}
 
     <h2>Items in Package</h2>
     {% if items %}
-        <table>
-            <tr>
-                <th>Name</th>
-                <th>Description</th>
-                <th>Quantity</th>
-            </tr>
-            {% for item in items %}
+        <table class="table table-bordered">
+            <thead>
                 <tr>
-                    <td>{{ item.name }}</td>
-                    <td>{{ item.description }}</td>
-                    <td>{{ item.quantity }}</td>
+                    <th>Name</th>
+                    <th>Description</th>
+                    <th>Quantity</th>
                 </tr>
-            {% endfor %}
+            </thead>
+            <tbody>
+                {% for item in items %}
+                    <tr>
+                        <td>{{ item.name }}</td>
+                        <td>{{ item.description }}</td>
+                        <td>{{ item.quantity }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
         </table>
     {% else %}
         <p>No items found for this package.</p>
     {% endif %}
 
     {% if can_redirect and is_owner %}
-        <div class="actions">
-            <p><a href="{% url 'redirect_package' tracking_number=package.id %}">Redirect Package</a></p>
+        <div class="mt-4">
+            <a href="{% url 'redirect_package' tracking_number=package.id %}" class="btn btn-primary">
+                <i class="fas fa-map-marker-alt"></i> Redirect Package
+            </a>
         </div>
     {% endif %}
-
-    <p><a href="{% url 'dashboard' %}">Back to Dashboard</a></p>
-</body>
-</html>
+{% else %}
+    <div class="alert alert-danger">
+        <i class="fas fa-exclamation-circle"></i> Package not found.
+    </div>
+{% endif %}
+{% endblock %}

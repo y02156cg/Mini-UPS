@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Mini-UPS{% endblock %}</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        .navbar-brand {
+            font-weight: bold;
+            color: #7B3F00 !important;
+        }
+        .nav-link {
+            color: #5A2D0C !important;
+        }
+        .navbar {
+            background-color: #FFEBC1 !important;
+        }
+        .btn-primary {
+            background-color: #7B3F00;
+            border-color: #5A2D0C;
+        }
+        .btn-primary:hover {
+            background-color: #5A2D0C;
+            border-color: #3B1E08;
+        }
+        .card {
+            border-color: #FFEBC1;
+        }
+        .card-header {
+            background-color: #FFEBC1;
+            color: #5A2D0C;
+        }
+        footer {
+            background-color: #FFEBC1;
+            color: #5A2D0C;
+            padding: 1rem 0;
+            margin-top: 2rem;
+        }
+        .package-status {
+            font-weight: bold;
+        }
+        .status-created { color: #6c757d; }
+        .status-waiting_for_pickup { color: #fd7e14; }
+        .status-pickup_assigned { color: #fd7e14; }
+        .status-ready_for_pickup { color: #fd7e14; }
+        .status-pickup_complete { color: #6610f2; }
+        .status-loading { color: #6610f2; }
+        .status-loaded { color: #0d6efd; }
+        .status-delivering { color: #0d6efd; }
+        .status-delivered { color: #198754; }
+        .truck-status {
+            font-weight: bold;
+        }
+        .truck-idle { color: #6c757d; }
+        .truck-traveling { color: #fd7e14; }
+        .truck-arrive_warehouse { color: #0d6efd; }
+        .truck-loading { color: #6610f2; }
+        .truck-delivering { color: #0d6efd; }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-light bg-light">
+        <div class="container">
+            <a class="navbar-brand" href="{% url 'home' %}">
+                <i class="fas fa-truck"></i> Mini-UPS
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'home' %}">Home</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'track_package' %}">Track Package</a>
+                    </li>
+                    {% if user.is_authenticated %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'dashboard' %}">My Dashboard</a>
+                        </li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Messages/Alerts -->
+    <div class="container mt-3">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    </div>
+
+    <!-- Main Content -->
+    <div class="container mt-4">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Footer -->
+    <footer class="mt-5">
+        <div class="container text-center">
+            <p>&copy; {% now "Y" %} Mini-UPS | ERSS Project</p>
+        </div>
+    </footer>
+
+    <!-- Bootstrap and other JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
+                    {% if user.is_staff %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'admin_dashboard' %}">Admin Dashboard</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'world_control' %}">World Control</a>
+                        </li>
+                    {% endif %}
+                </ul>
+                <ul class="navbar-nav">
+                    {% if user.is_authenticated %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'logout' %}">Logout</a>
+                        </li>
+                    {% else %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'login' %}">Login</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'register' %}">Register</a>
+                        </li>
+                    {% endif %}
+
+<!-- notification_header.html -->
+{% if user.is_authenticated %}
+<li class="nav-item dropdown">
+    <a class="nav-link dropdown-toggle position-relative" href="#" id="notificationDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+        <i class="fas fa-bell"></i>
+        {% if unread_notification_count > 0 %}
+        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" id="notification-badge">
+            {{ unread_notification_count }}
+            <span class="visually-hidden">unread notifications</span>
+        </span>
+        {% endif %}
+    </a>
+    <div class="dropdown-menu dropdown-menu-end notification-dropdown" aria-labelledby="notificationDropdown" style="width: 350px; max-height: 500px; overflow-y: auto;">
+        <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom">
+            <h6 class="mb-0">Notifications</h6>
+            <div>
+                <button class="btn btn-sm btn-link text-decoration-none" id="refresh-notifications">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+                <button class="btn btn-sm btn-link text-decoration-none" id="mark-all-read-dropdown">
+                    <i class="fas fa-check-double"></i> Mark all read
+                </button>
+            </div>
+        </div>
+        
+        {% if latest_notifications %}
+            <div id="notifications-container">
+                {% for notification in latest_notifications %}
+                    <a href="{% url 'notification_settings' %}" class="dropdown-item notification-item {% if not notification.read %}fw-bold{% endif %}">
+                        <div class="d-flex w-100 justify-content-between">
+                            <p class="mb-1 text-wrap">{{ notification.message }}</p>
+                        </div>
+                        <small class="text-muted">{{ notification.created_at|timesince }} ago</small>
+                    </a>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="dropdown-item text-center text-muted py-3">
+                No notifications
+            </div>
+        {% endif %}
+        
+        <div class="dropdown-divider"></div>
+        <a class="dropdown-item text-center" href="{% url 'notification_settings' %}">
+            <i class="fas fa-cog me-2"></i> Notification Settings
+        </a>
+    </div>
+</li>
+
+<script>
+    // Notification refresh
+    document.addEventListener('DOMContentLoaded', function() {
+        const refreshBtn = document.getElementById('refresh-notifications');
+        const markAllReadBtn = document.getElementById('mark-all-read-dropdown');
+        const notificationBadge = document.getElementById('notification-badge');
+        const notificationsContainer = document.getElementById('notifications-container');
+        
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                refreshNotifications(false);
+            });
+        }
+        
+        if (markAllReadBtn) {
+            markAllReadBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                markAllNotificationsRead();
+            });
+        }
+        
+        // Auto refresh notifications every 30 seconds
+        setInterval(function() {
+            if (document.hidden) return; // Don't refresh if tab is not active
+            refreshNotifications(true);
+        }, 30000);
+        
+        function refreshNotifications(silent) {
+            fetch('/api/notifications/?mark_read=false')
+                .then(response => response.json())
+                .then(data => {
+                    updateNotificationUI(data, silent);
+                })
+                .catch(error => {
+                    if (!silent) {
+                        console.error('Error refreshing notifications:', error);
+                    }
+                });
+        }
+        
+        function markAllNotificationsRead() {
+            fetch('/notifications/mark-all-read/', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken'),
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    refreshNotifications(false);
+                }
+            })
+            .catch(error => console.error('Error marking all notifications as read:', error));
+        }
+        
+        function updateNotificationUI(data, silent) {
+            // Update notification count badge
+            if (notificationBadge) {
+                if (data.unread_count > 0) {
+                    notificationBadge.textContent = data.unread_count;
+                    notificationBadge.classList.remove('d-none');
+                    
+                    // Play notification sound if not silent and we have new notifications
+                    if (!silent && data.notifications.some(n => !n.read)) {
+                        playNotificationSound();
+                    }
+                } else {
+                    notificationBadge.classList.add('d-none');
+                }
+            }
+            
+            // Update notification dropdown content
+            if (notificationsContainer && data.notifications.length > 0) {
+                let html = '';
+                data.notifications.forEach(notification => {
+                    const timeAgo = formatTimeAgo(new Date(notification.created_at));
+                    html += `
+                        <a href="/notifications" class="dropdown-item notification-item ${!notification.read ? 'fw-bold' : ''}">
+                            <div class="d-flex w-100 justify-content-between">
+                                <p class="mb-1 text-wrap">${notification.message}</p>
+                            </div>
+                            <small class="text-muted">${timeAgo} ago</small>
+                        </a>
+                    `;
+                });
+                notificationsContainer.innerHTML = html;
+            } else if (notificationsContainer) {
+                notificationsContainer.innerHTML = `
+                    <div class="dropdown-item text-center text-muted py-3">
+                        No notifications
+                    </div>
+                `;
+            }
+        }
+        
+        function formatTimeAgo(date) {
+            const now = new Date();
+            const diffInSeconds = Math.floor((now - date) / 1000);
+            
+            if (diffInSeconds < 60) {
+                return `${diffInSeconds} seconds`;
+            }
+            
+            const diffInMinutes = Math.floor(diffInSeconds / 60);
+            if (diffInMinutes < 60) {
+                return `${diffInMinutes} minutes`;
+            }
+            
+            const diffInHours = Math.floor(diffInMinutes / 60);
+            if (diffInHours < 24) {
+                return `${diffInHours} hours`;
+            }
+            
+            const diffInDays = Math.floor(diffInHours / 24);
+            return `${diffInDays} days`;
+        }
+        
+        function playNotificationSound() {
+            // Create audio element for notification sound
+            const audio = new Audio('/static/sounds/notification.mp3');
+            audio.volume = 0.5;
+            audio.play().catch(e => {
+                // Browser may block autoplay, that's ok
+                console.log('Could not play notification sound.');
+            });
+        }
+        
+        // Function to get CSRF token
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+    });
+</script>
+{% endif %}

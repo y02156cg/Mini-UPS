@@ -1,0 +1,23 @@
+2025-04-27 03:57:16,129 - ups_daemon - INFO - Try to start UPS Daemon
+2025-04-27 03:57:16,129 - world_connection - INFO - World connection init started
+2025-04-27 03:57:16,129 - world_connection - INFO - World connection init finished
+2025-04-27 03:57:16,129 - world_connection - INFO - World connection set amazon communication
+2025-04-27 03:57:16,130 - ups_daemon - INFO - Connect to a random new world, world ID: None
+2025-04-27 03:57:16,131 - world_connection - INFO - Connected to world simulator at 67.159.68.217:12345
+2025-04-27 03:57:16,131 - world_connection - INFO - Sent UConnect message to world
+2025-04-27 03:57:16,131 - world_connection - DEBUG - called receive msg
+2025-04-27 03:57:16,131 - world_connection - DEBUG - receive msg and not null
+2025-04-27 03:57:16,149 - django.utils.autoreload - INFO - Watching for file changes with StatReloader
+2025-04-27 03:57:16,160 - world_connection - INFO - Successfully connected to world 106
+2025-04-27 03:57:16,188 - world_connection - INFO - Saved 5 trucks to database for world 106
+2025-04-27 03:57:16,193 - world_connection - INFO - Starting world response processor
+2025-04-27 03:57:16,193 - world_connection - DEBUG - Try to receive msg from world
+2025-04-27 03:57:16,193 - world_connection - DEBUG - called receive msg
+2025-04-27 03:57:16,193 - world_connection - DEBUG - receive msg and not null
+2025-04-27 03:57:16,193 - world_connection - INFO - Starting retry queue processor
+2025-04-27 03:57:16,197 - world_connection - INFO - Starting command queue processor
+2025-04-27 03:57:16,199 - world_connection - INFO - All background processors for world connection started
+2025-04-27 03:57:16,199 - amazon_comm - INFO - Start the Amazon communication
+2025-04-27 03:57:16,202 - ups_daemon - INFO - 启动卡车分配循环
+2025-04-27 03:57:16,202 - ups_daemon - INFO - 启动主循环
+2025-04-27 03:57:16,202 - ups_daemon - INFO - UPS daemon started successfully, world id: 106)
