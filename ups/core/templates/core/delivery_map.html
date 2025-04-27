@@ -1,0 +1,828 @@
+{% extends 'core/base.html' %}
+{% load static %}
+
+{% block title %}Real-time Delivery Map{% endblock %}
+
+{% block extra_css %}
+<style>
+    #map-container {
+        width: 100%;
+        height: 600px;
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 5px;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    #world-map {
+        width: 100%;
+        height: 100%;
+    }
+    
+    .map-controls {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: white;
+        padding: 10px;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        z-index: 1000;
+    }
+    
+    .map-legend {
+        position: absolute;
+        bottom: 10px;
+        left: 10px;
+        background: white;
+        padding: 10px;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        z-index: 1000;
+    }
+    
+    .legend-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 5px;
+    }
+    
+    .legend-color {
+        width: 20px;
+        height: 20px;
+        margin-right: 10px;
+        border-radius: 3px;
+    }
+    
+    .package-info {
+        background: white;
+        padding: 15px;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        margin-top: 20px;
+    }
+    
+    .refresh-control {
+        margin-top: 10px;
+    }
+    
+    .zoom-control button {
+        width: 40px;
+        height: 40px;
+        font-size: 18px;
+        margin: 2px;
+    }
+    
+    .coordinate-info {
+        position: absolute;
+        bottom: 10px;
+        right: 10px;
+        background: white;
+        padding: 5px 10px;
+        border-radius: 3px;
+        font-size: 12px;
+        opacity: 0.8;
+    }
+    
+    .truck-path {
+        stroke: #f1c40f;
+        stroke-width: 2;
+        stroke-dasharray: 5,3;
+        fill: none;
+    }
+    
+    .focus-animation {
+        animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+        0% {
+            transform: scale(1);
+            opacity: 1;
+        }
+        50% {
+            transform: scale(1.2);
+            opacity: 0.7;
+        }
+        100% {
+            transform: scale(1);
+            opacity: 1;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <h1>Real-time Delivery Map</h1>
+            <p class="lead">Track your packages, warehouses, and deliveries in real-time</p>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-12">
+            <div id="map-container">
+                <canvas id="world-map"></canvas>
+                
+                <div class="map-controls">
+                    <div class="zoom-control">
+                        <button class="btn btn-light" id="zoom-in">+</button>
+                        <button class="btn btn-light" id="zoom-out">-</button>
+                    </div>
+                    <div class="refresh-control">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="auto-refresh" checked>
+                            <label class="form-check-label" for="auto-refresh">
+                                Auto-refresh
+                            </label>
+                        </div>
+                        <button class="btn btn-sm btn-primary" id="refresh-map">Refresh Now</button>
+                    </div>
+                </div>
+                
+                <div class="map-legend">
+                    <h6>Legend</h6>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #3498db;"></div>
+                        <span>Warehouse</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #2ecc71;"></div>
+                        <span>Truck (Idle)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #f1c40f;"></div>
+                        <span>Truck (In Transit)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #e74c3c;"></div>
+                        <span>Package Destination</span>
+                    </div>
+                </div>
+                
+                <div class="coordinate-info" id="coordinate-display">
+                    X: 0, Y: 0
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mt-4">
+        <div class="col-12">
+            <div id="selected-info" class="package-info d-none">
+                <h4>Selected Item Information</h4>
+                <div id="info-content">
+                    <!-- Selected item details will be shown here -->
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    {% if is_authenticated %}
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Your Active Packages</h5>
+                    <button class="btn btn-sm btn-outline-primary" id="center-all-packages">
+                        <i class="fas fa-crosshairs"></i> Center All
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Tracking Number</th>
+                                    <th>Status</th>
+                                    <th>Destination</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="packages-table">
+                                {% if packages %}
+                                    {% for package in packages %}
+                                    <tr data-package-id="{{ package.id }}">
+                                        <td>{{ package.id }}</td>
+                                        <td>{{ package.status }}</td>
+                                        <td>({{ package.destination_x }}, {{ package.destination_y }})</td>
+                                        <td>
+                                            <a href="{% url 'package_details' package.id %}" class="btn btn-sm btn-info">Details</a>
+                                            <button class="btn btn-sm btn-primary locate-package">Locate</button>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                {% else %}
+                                    <tr>
+                                        <td colspan="4" class="text-center">No active packages</td>
+                                    </tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Map variables
+    let canvas, ctx;
+    let mapData = {
+        warehouses: [],
+        trucks: [],
+        packages: []
+    };
+    let scale = 5;  // Scale factor for coordinates
+    let offsetX = 50;
+    let offsetY = 50;
+    let refreshInterval;
+    let selectedItem = null;
+    let mouseX = 0, mouseY = 0;
+    let isDragging = false;
+    let lastX = 0, lastY = 0;
+    
+    // Initialize the map
+    function initializeMap() {
+        canvas = document.getElementById('world-map');
+        ctx = canvas.getContext('2d');
+        
+        // Resize canvas to container
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+        
+        // Set up event listeners
+        setupEventListeners();
+        
+        // Initial data load
+        loadMapData();
+        
+        // Set up auto-refresh
+        if (document.getElementById('auto-refresh').checked) {
+            startAutoRefresh();
+        }
+    }
+    
+    function resizeCanvas() {
+        const container = document.getElementById('map-container');
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+        drawMap();
+    }
+    
+    function setupEventListeners() {
+        // Zoom controls
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            scale *= 1.2;
+            drawMap();
+        });
+        
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            scale /= 1.2;
+            drawMap();
+        });
+        
+        // Refresh controls
+        document.getElementById('auto-refresh').addEventListener('change', (e) => {
+            if (e.target.checked) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        });
+        
+        document.getElementById('refresh-map').addEventListener('click', loadMapData);
+        
+        // Click on map elements
+        canvas.addEventListener('click', handleMapClick);
+        
+        // Mouse move to show coordinates
+        canvas.addEventListener('mousemove', handleMouseMove);
+        
+        // Map panning
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            canvas.style.cursor = 'grabbing';
+        });
+        
+        canvas.addEventListener('mouseup', () => {
+            isDragging = false;
+            canvas.style.cursor = 'default';
+        });
+        
+        canvas.addEventListener('mouseleave', () => {
+            isDragging = false;
+            canvas.style.cursor = 'default';
+        });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const dx = e.clientX - lastX;
+                const dy = e.clientY - lastY;
+                offsetX += dx;
+                offsetY += dy;
+                lastX = e.clientX;
+                lastY = e.clientY;
+                drawMap();
+            }
+        });
+        
+        // Locate package buttons
+        document.querySelectorAll('.locate-package').forEach(button => {
+            button.addEventListener('click', (e) => {
+                const packageId = e.target.closest('tr').dataset.packageId;
+                locatePackage(packageId);
+            });
+        });
+        
+        // Center all packages
+        document.getElementById('center-all-packages')?.addEventListener('click', centerAllPackages);
+    }
+    
+    function centerAllPackages() {
+        if (mapData.packages.length === 0) return;
+        
+        // Calculate the average coordinates of all packages
+        let sumX = 0, sumY = 0;
+        mapData.packages.forEach(pkg => {
+            sumX += pkg.destination_x;
+            sumY += pkg.destination_y;
+        });
+        
+        const avgX = sumX / mapData.packages.length;
+        const avgY = sumY / mapData.packages.length;
+        
+        // Center the map on those coordinates
+        offsetX = canvas.width / 2 - avgX * scale;
+        offsetY = canvas.height / 2 - avgY * scale;
+        
+        // Adjust scale to fit all packages
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        mapData.packages.forEach(pkg => {
+            minX = Math.min(minX, pkg.destination_x);
+            maxX = Math.max(maxX, pkg.destination_x);
+            minY = Math.min(minY, pkg.destination_y);
+            maxY = Math.max(maxY, pkg.destination_y);
+        });
+        
+        const width = maxX - minX;
+        const height = maxY - minY;
+        
+        if (width > 0 && height > 0) {
+            // Calculate scale to fit all packages with some padding
+            const padding = 50;
+            const scaleX = (canvas.width - padding * 2) / width;
+            const scaleY = (canvas.height - padding * 2) / height;
+            scale = Math.min(scaleX, scaleY, 10); // Limit max scale
+        }
+        
+        drawMap();
+    }
+    
+    function handleMouseMove(e) {
+        const rect = canvas.getBoundingClientRect();
+        mouseX = e.clientX - rect.left;
+        mouseY = e.clientY - rect.top;
+        
+        // Convert screen coordinates to world coordinates
+        const worldX = Math.floor((mouseX - offsetX) / scale);
+        const worldY = Math.floor((mouseY - offsetY) / scale);
+        
+        // Update coordinate display
+        document.getElementById('coordinate-display').textContent = `X: ${worldX}, Y: ${worldY}`;
+    }
+    
+    function startAutoRefresh() {
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+        }
+        refreshInterval = setInterval(loadMapData, 5000);
+    }
+    
+    function stopAutoRefresh() {
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+        }
+    }
+    
+    function loadMapData() {
+        fetch('/api/map-data/')
+            .then(response => response.json())
+            .then(data => {
+                mapData = data;
+                drawMap();
+                updatePackagesTable();
+            })
+            .catch(error => console.error('Error loading map data:', error));
+    }
+    
+    function drawMap() {
+        // Clear canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw grid
+        drawGrid();
+        
+        // Draw warehouses
+        mapData.warehouses.forEach(warehouse => {
+            drawWarehouse(warehouse);
+        });
+        
+        // Draw package delivery routes
+        mapData.packages.forEach(package => {
+            if (package.status === 'delivering' && package.truck_x !== null) {
+                drawDeliveryRoute(package);
+            }
+        });
+        
+        // Draw trucks
+        mapData.trucks.forEach(truck => {
+            drawTruck(truck);
+        });
+        
+        // Draw packages
+        mapData.packages.forEach(package => {
+            drawPackage(package);
+        });
+        
+        // Draw selected item highlight if any
+        if (selectedItem) {
+            drawSelectedHighlight();
+        }
+    }
+    
+    function drawGrid() {
+        const gridSize = 10;
+        ctx.strokeStyle = '#e6e6e6';
+        ctx.lineWidth = 0.5;
+        
+        // Calculate grid start and end points based on current view
+        const startX = Math.floor(-offsetX / (gridSize * scale)) * gridSize;
+        const startY = Math.floor(-offsetY / (gridSize * scale)) * gridSize;
+        const endX = Math.ceil((canvas.width - offsetX) / (gridSize * scale)) * gridSize;
+        const endY = Math.ceil((canvas.height - offsetY) / (gridSize * scale)) * gridSize;
+        
+        // Vertical lines
+        for (let x = startX; x <= endX; x += gridSize) {
+            const screenX = x * scale + offsetX;
+            ctx.beginPath();
+            ctx.moveTo(screenX, 0);
+            ctx.lineTo(screenX, canvas.height);
+            ctx.stroke();
+            
+            // Draw coordinate labels for major grid lines
+            if (x % 50 === 0) {
+                ctx.fillStyle = '#999';
+                ctx.font = '10px Arial';
+                ctx.fillText(x.toString(), screenX + 2, 12);
+            }
+        }
+        
+        // Horizontal lines
+        for (let y = startY; y <= endY; y += gridSize) {
+            const screenY = y * scale + offsetY;
+            ctx.beginPath();
+            ctx.moveTo(0, screenY);
+            ctx.lineTo(canvas.width, screenY);
+            ctx.stroke();
+            
+            // Draw coordinate labels for major grid lines
+            if (y % 50 === 0) {
+                ctx.fillStyle = '#999';
+                ctx.font = '10px Arial';
+                ctx.fillText(y.toString(), 2, screenY + 12);
+            }
+        }
+    }
+    
+    function drawWarehouse(warehouse) {
+        const x = warehouse.x * scale + offsetX;
+        const y = warehouse.y * scale + offsetY;
+        
+        ctx.fillStyle = '#3498db';
+        ctx.beginPath();
+        ctx.rect(x - 10, y - 10, 20, 20);
+        ctx.fill();
+        
+        ctx.fillStyle = 'white';
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('W' + warehouse.id, x, y + 4);
+        
+        // Store position for click detection
+        warehouse.screenX = x;
+        warehouse.screenY = y;
+    }
+    
+    function drawTruck(truck) {
+        const x = truck.x * scale + offsetX;
+        const y = truck.y * scale + offsetY;
+        
+        // Different colors based on status
+        if (truck.status === 'idle') {
+            ctx.fillStyle = '#2ecc71';
+        } else if (truck.status === 'traveling' || truck.status === 'delivering') {
+            ctx.fillStyle = '#f1c40f';
+        } else if (truck.status === 'arrive_warehouse') {
+            ctx.fillStyle = '#3498db';  // Same as warehouse color
+        } else if (truck.status === 'loading') {
+            ctx.fillStyle = '#9b59b6';  // Purple for loading
+        } else {
+            ctx.fillStyle = '#95a5a6';  // Gray for other statuses
+        }
+        
+        ctx.beginPath();
+        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.fillStyle = 'white';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('T' + truck.id, x, y + 3);
+        
+        // Store position for click detection
+        truck.screenX = x;
+        truck.screenY = y;
+    }
+    
+    function drawDeliveryRoute(package) {
+        const truckX = package.truck_x * scale + offsetX;
+        const truckY = package.truck_y * scale + offsetY;
+        const destX = package.destination_x * scale + offsetX;
+        const destY = package.destination_y * scale + offsetY;
+        
+        ctx.strokeStyle = '#e74c3c';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.moveTo(truckX, truckY);
+        ctx.lineTo(destX, destY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    
+    function drawPackage(package) {
+        // Draw destination
+        const destX = package.destination_x * scale + offsetX;
+        const destY = package.destination_y * scale + offsetY;
+        
+        ctx.fillStyle = '#e74c3c';
+        ctx.beginPath();
+        ctx.moveTo(destX, destY - 8);
+        ctx.lineTo(destX + 6, destY + 4);
+        ctx.lineTo(destX - 6, destY + 4);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Store position for click detection
+        package.destScreenX = destX;
+        package.destScreenY = destY;
+    }
+    
+    function drawSelectedHighlight() {
+        ctx.strokeStyle = '#3498db';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        
+        if (selectedItem.type === 'warehouse') {
+            ctx.beginPath();
+            ctx.rect(selectedItem.screenX - 15, selectedItem.screenY - 15, 30, 30);
+            ctx.stroke();
+        } else if (selectedItem.type === 'truck') {
+            ctx.beginPath();
+            ctx.arc(selectedItem.screenX, selectedItem.screenY, 12, 0, Math.PI * 2);
+            ctx.stroke();
+        } else if (selectedItem.type === 'package') {
+            ctx.beginPath();
+            ctx.moveTo(selectedItem.destScreenX, selectedItem.destScreenY - 12);
+            ctx.lineTo(selectedItem.destScreenX + 10, selectedItem.destScreenY + 8);
+            ctx.lineTo(selectedItem.destScreenX - 10, selectedItem.destScreenY + 8);
+            ctx.closePath();
+            ctx.stroke();
+        }
+        
+        ctx.setLineDash([]);
+    }
+    
+    function handleMapClick(e) {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        
+        // Check if we clicked on any item
+        let found = false;
+        
+        // Check warehouses
+        for (const warehouse of mapData.warehouses) {
+            if (Math.abs(clickX - warehouse.screenX) < 10 && Math.abs(clickY - warehouse.screenY) < 10) {
+                selectItem('warehouse', warehouse);
+                found = true;
+                break;
+            }
+        }
+        
+        // Check trucks
+        if (!found) {
+            for (const truck of mapData.trucks) {
+                if (Math.sqrt(Math.pow(clickX - truck.screenX, 2) + Math.pow(clickY - truck.screenY, 2)) < 8) {
+                    selectItem('truck', truck);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        
+        // Check package destinations
+        if (!found) {
+            for (const package of mapData.packages) {
+                if (Math.sqrt(Math.pow(clickX - package.destScreenX, 2) + Math.pow(clickY - package.destScreenY, 2)) < 8) {
+                    selectItem('package', package);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        
+        // If clicked on empty space, clear selection
+        if (!found) {
+            clearSelection();
+        }
+        
+        drawMap();
+    }
+    
+    function selectItem(type, item) {
+        selectedItem = {
+            type: type,
+            item: item,
+            screenX: type === 'package' ? item.destScreenX : item.screenX,
+            screenY: type === 'package' ? item.destScreenY : item.screenY,
+            destScreenX: item.destScreenX,
+            destScreenY: item.destScreenY
+        };
+        
+        // Apply focus animation to the selected item row in the table
+        if (type === 'package') {
+            const rows = document.querySelectorAll('#packages-table tr');
+            rows.forEach(row => {
+                row.classList.remove('table-primary');
+                if (row.dataset.packageId === item.id) {
+                    row.classList.add('table-primary');
+                    // Scroll to the row
+                    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            });
+        }
+        
+        // Show info panel
+        const infoPanel = document.getElementById('selected-info');
+        const infoContent = document.getElementById('info-content');
+        
+        infoPanel.classList.remove('d-none');
+        
+        if (type === 'warehouse') {
+            infoContent.innerHTML = `
+                <p><strong>Warehouse ID:</strong> ${item.id}</p>
+                <p><strong>Location:</strong> (${item.x}, ${item.y})</p>
+            `;
+            
+            // Add packages at this warehouse
+            const warehousePackages = mapData.packages.filter(p => 
+                p.status === 'waiting_for_pickup' || 
+                p.status === 'ready_for_pickup'
+            );
+            
+            if (warehousePackages.length > 0) {
+                infoContent.innerHTML += `<p><strong>Packages at Warehouse:</strong></p>`;
+                infoContent.innerHTML += `<ul>`;
+                warehousePackages.forEach(p => {
+                    infoContent.innerHTML += `<li>${p.id} - ${p.status}</li>`;
+                });
+                infoContent.innerHTML += `</ul>`;
+            }
+        } else if (type === 'truck') {
+            infoContent.innerHTML = `
+                <p><strong>Truck ID:</strong> ${item.id}</p>
+                <p><strong>Status:</strong> ${item.status}</p>
+                <p><strong>Location:</strong> (${item.x}, ${item.y})</p>
+            `;
+            
+            // Add packages on this truck
+            const truckPackages = mapData.packages.filter(p => p.truck_id === item.id);
+            if (truckPackages.length > 0) {
+                infoContent.innerHTML += `<p><strong>Carrying Packages:</strong></p>`;
+                infoContent.innerHTML += `<ul>`;
+                truckPackages.forEach(p => {
+                    infoContent.innerHTML += `<li>${p.id} - ${p.status}</li>`;
+                });
+                infoContent.innerHTML += `</ul>`;
+            }
+        } else if (type === 'package') {
+            infoContent.innerHTML = `
+                <p><strong>Package ID:</strong> ${item.id}</p>
+                <p><strong>Status:</strong> ${item.status}</p>
+                <p><strong>Destination:</strong> (${item.destination_x}, ${item.destination_y})</p>
+            `;
+            
+            if (item.truck_id) {
+                const truck = mapData.trucks.find(t => t.id === item.truck_id);
+                if (truck) {
+                    infoContent.innerHTML += `
+                        <p><strong>Assigned Truck:</strong> ${item.truck_id}</p>
+                        <p><strong>Truck Status:</strong> ${truck.status}</p>
+                        <p><strong>Truck Location:</strong> (${truck.x}, ${truck.y})</p>
+                    `;
+                    
+                    // Calculate estimated time of arrival
+                    const dx = item.destination_x - truck.x;
+                    const dy = item.destination_y - truck.y;
+                    const distance = Math.sqrt(dx*dx + dy*dy);
+                    const speed = 1; // Assuming 1 unit per minute
+                    const eta = Math.ceil(distance / speed);
+                    
+                    infoContent.innerHTML += `<p><strong>Estimated Delivery:</strong> ~${eta} minutes</p>`;
+                }
+            }
+            
+            infoContent.innerHTML += `<a href="/package/${item.id}" class="btn btn-sm btn-info mt-2">View Details</a>`;
+        }
+    }
+    
+    function clearSelection() {
+        selectedItem = null;
+        document.getElementById('selected-info').classList.add('d-none');
+        
+        // Remove all highlighting from package rows
+        const rows = document.querySelectorAll('#packages-table tr');
+        rows.forEach(row => {
+            row.classList.remove('table-primary');
+        });
+    }
+    
+    function locatePackage(packageId) {
+        const package = mapData.packages.find(p => p.id === packageId);
+        if (package) {
+            // Center the map on the package's destination
+            offsetX = canvas.width / 2 - package.destination_x * scale;
+            offsetY = canvas.height / 2 - package.destination_y * scale;
+            
+            // Select the package
+            selectItem('package', package);
+            drawMap();
+            
+            // Scroll to map
+            document.getElementById('map-container').scrollIntoView({ behavior: 'smooth' });
+        }
+    }
+    
+    function updatePackagesTable() {
+        const tableBody = document.getElementById('packages-table');
+        if (!tableBody) return;
+        
+        if (mapData.packages && mapData.packages.length > 0) {
+            let html = '';
+            mapData.packages.forEach(package => {
+                html += `
+                <tr data-package-id="${package.id}" class="${selectedItem && selectedItem.type === 'package' && selectedItem.item.id === package.id ? 'table-primary' : ''}">
+                    <td>${package.id}</td>
+                    <td>${package.status}</td>
+                    <td>(${package.destination_x}, ${package.destination_y})</td>
+                    <td>
+                        <a href="/package/${package.id}" class="btn btn-sm btn-info">Details</a>
+                        <button class="btn btn-sm btn-primary locate-package">Locate</button>
+                    </td>
+                </tr>
+                `;
+            });
+            tableBody.innerHTML = html;
+            
+            // Re-attach event listeners
+            document.querySelectorAll('.locate-package').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const packageId = e.target.closest('tr').dataset.packageId;
+                    locatePackage(packageId);
+                });
+            });
+        } else {
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="4" class="text-center">No active packages</td>
+                </tr>
+            `;
+        }
+    }
+    
+    // Initialize map when DOM is loaded
+    document.addEventListener('DOMContentLoaded', initializeMap);
+</script>
+{% endblock %}

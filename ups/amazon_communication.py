@@ -17,6 +17,7 @@ from core.models import *
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils.timezone import now
+from notification_manager import notification_manager
 
 logging.Formatter.converter = time.localtime
 logging.basicConfig (level=logging.INFO, 
@@ -26,8 +27,6 @@ logging.basicConfig (level=logging.INFO,
 logger = logging.getLogger('amazon_comm') # amazon communication logger name
 
 class AmazonCommunication:
-    # needs to improve based on the protocol
-
     def __init__(self, amazon_url, db_pool, world_connection):
         """
         Initialize the Amazon communication module.
@@ -164,164 +163,28 @@ class AmazonCommunication:
         except Exception as e:
             logger.error(f"Error sending message to Amazon: {e}")
             return False
-            
-    def _notify_truck_arrived(self, content):
-        """
-        Notify Amazon that a truck has arrived at a warehouse.
 
-        Args:
-            content: Dictionary with truck_id and warehouse_id
-        """
-
-        message = {
-            "action": "truck_arrived",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message_id": str(uuid.uuid4()),
-            "truck_id": content['truck_id'],
-            "warehouse_id": content['warehouse_id']
-        }
-
-        return message
-
-    def _notify_package_loaded(self, content):
-        """
-        Notify Amazon that a package has been loaded onto a truck.
-
-        Args:
-            content: Dictionary with truck_id and package_id
-        """
-
-        message = {
-            "action": "package_loaded",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message_id": str(uuid.uuid4()),
-            "package_id": content['package_id'],
-            "truck_id": content['truck_id']
-        }
-        return message
 
     def _notify_delivery_started(self, content):
         """
-        Notify Amazon that delivery has started for a package.
+        Notify Amazon that a package has been loaded onto a truck.
 
         Args:
             content: Dictionary with truck_id and package_id
         """
 
         message = {
-            "action": "package_loaded",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message_id": str(uuid.uuid4()),
-            "package_id": content['package_id'],
-            "truck_id": content['truck_id']
+            "action": "delivery_started",
+            "in_response_to": "",
+            "status": "success",
+            "message": f"The delivery for package {content['package_id']} and truck {content['truck_id']} is delivered"
+            # "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            # "message_id": str(uuid.uuid4()),
+            # "package_id": content['package_id'],
+            # "truck_id": content['truck_id']
         }
         return message
 
-    def _notify_delivery_delivered(self, content):
-        """
-        Notify Amazon that a package has been delivered.
-
-        Args:
-            content: Dictionary with truck_id and package_id, x, and y
-        """
-
-        message = {
-            "action": "package_loaded",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message_id": str(uuid.uuid4()),
-            "package_id": content['package_id'],
-            "truck_id": content['truck_id'],
-            "delivery_x": content['x'],
-            "delivery_y": content['y']
-        }
-        return message
-
-    def _notify_query_status(self, content):
-        """
-        Notify Amazon that a query to status is made.
-
-        Args:
-            content: Dictionary with package_id
-        """
-
-        message = {
-            "action": "package_loaded",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message_id": str(uuid.uuid4()),
-            "package_id": content['package_id'],
-        }
-        return message
-
-    def _notify_redirect_package(self, content):
-        """
-        Notify Amazon that a package needs to be redirected.
-
-        Args:
-            content: Dictionary with package_id, new_destination_x, and new_destination_y, and user_id
-        """
-
-        message = {
-            "action": "package_loaded",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message_id": str(uuid.uuid4()),
-            "package_id": content['package_id'],
-            "truck_id": content['truck_id'],
-            "new_destination_x": content['x'],
-            "new_destination_y": content['y'],
-            "user_id": content.get('user_id')
-        }
-        return message
-
-    def notify_truck_arrived(self, truck_id, warehouse_id):
-        """
-        Notify Amazon that a truck has arrived at a warehouse.
-        
-        Args:
-            truck_id: ID of the truck
-            warehouse_id: ID of the warehouse
-            
-        Returns:
-            bool: True if successfully queued, False otherwise
-        """
-        try:
-            AmazonMessage.objects.create(
-                message_type='truck_arrived',
-                message_content={
-                    'truck_id': truck_id,
-                    'warehouse_id': warehouse_id
-                },
-                status='pending'
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Error queuing truck_arrived message: {e}")
-            return False
-    
-    def notify_package_loaded(self, package_id, truck_id):
-        """
-        Notify Amazon that a package has been loaded onto a truck.
-        
-        Args:
-            package_id: ID of the package
-            truck_id: ID of the truck
-            
-        Returns:
-            bool: True if successfully queued, False otherwise
-        """
-        try:
-            AmazonMessage.objects.create(
-                message_type='package_loaded',
-                message_content={
-                    'package_id': package_id,
-                    'truck_id': truck_id
-                },
-                status='pending'
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Error queuing package_loaded message: {e}")
-            return False
-    
     def notify_delivery_started(self, package_id, truck_id):
         """
         Notify Amazon that delivery has started for a package.
@@ -347,6 +210,26 @@ class AmazonCommunication:
             logger.error(f"Error queuing delivery_started message: {e}")
             return False
     
+    # 6.2 package delivered ✅
+    def _notify_package_delivered(self, content):
+        """
+        Notify Amazon that a package has been delivered.
+
+        Args:
+            content: Dictionary with truck_id and package_id, x, and y
+        """
+
+        message = {
+            "action": "package_delivered",
+            # "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            # "message_id": str(uuid.uuid4()),
+            "package_id": content['package_id'],
+            "truck_id": content['truck_id'],
+            "delivery_x": content['x'],
+            "delivery_y": content['y']
+        }
+        return message
+
     def notify_package_delivered(self, package_id, truck_id, x, y):
         """
         Notify Amazon that a package has been delivered.
@@ -366,8 +249,8 @@ class AmazonCommunication:
                 message_content={
                     'package_id': package_id,
                     'truck_id': truck_id,
-                    'x': x,
-                    'y': y
+                    'delivery_x': x,
+                    'delivery_y': y
                 },
                 status='pending',
             )
@@ -376,6 +259,41 @@ class AmazonCommunication:
             logger.error(f"Error queuing package_delivered message: {e}")
             return False
     
+    # query_status
+    def _notify_query_status(self, content):
+        """
+        Notify Amazon that a query to status is made.
+
+        Args:
+            content: Dictionary with package_id
+        """
+
+        message = {
+            "action": "query_status",
+            "package_id": content['package_id'],
+        }
+        return message
+
+    # 8. redirect package
+    def _notify_redirect_package(self, content):
+        """
+        Notify Amazon that a package needs to be redirected.
+
+        Args:
+            content: Dictionary with package_id, new_destination_x, and new_destination_y, and user_id
+        """
+
+        message = {
+            "action": "redirect_package",
+            # "package_id": content['package_id'],
+            # "truck_id": content['truck_id'],
+            "new_destination_x": content['x'],
+            "new_destination_y": content['y'],
+            "user_id": content.get('user_id')
+        }
+        return message
+
+    # 11. world id coordination
     def notify_world_created(self, world_id):
         """
         Notify Amazon about a newly created world.
@@ -388,16 +306,15 @@ class AmazonCommunication:
         """
         try:
             AmazonMessage.objects.create(
-            message_type='world_created',
-            message_content={'world_id': world_id},
-            status='pending'
+                message_type='world_created',
+                message_content={'world_id': world_id},
+                status='pending'
             )
             return True
         except Exception as e:
             logger.error(f"Error queuing world_created message: {e}")
             return False
     
-
     '''
     Handling requests
     '''
@@ -428,8 +345,10 @@ class AmazonCommunication:
                 return self.handle_request_pickup(request_data)
             elif action == 'package_ready':
                 return self.handle_package_ready(request_data)
-            elif action == 'load_package':
-                return self.handle_load_package(request_data)
+            elif action == 'loading_package':
+                return self.handle_loading_package(request_data)
+            elif action == 'package_loaded':
+                return self.handle_package_loaded(request_data)
             elif action == 'query_status':
                 return self.handle_query_status(request_data)
             elif action == 'world_created_response':
@@ -450,7 +369,8 @@ class AmazonCommunication:
                 "status": "error",
                 "message": f"Internal error: {str(e)}"
             }
-        
+    
+    # 4.1 
     def handle_request_pickup(self, request):
         """
         Handle a request_pickup message from Amazon:
@@ -487,9 +407,7 @@ class AmazonCommunication:
                 warehouse, _ = Warehouse.objects.get_or_create(
                     id=warehouse_id,
                     defaults={
-                        'x': destination_x,
-                        'y': destination_y,
-                        'world_id': request.get('world_id', 1),
+                        'world_id': self.world_connection.world_id
                     }
                 )
 
@@ -501,7 +419,7 @@ class AmazonCommunication:
                         defaults={
                             'username': f"user_{user_id}",
                             'password': make_password("1234"),
-                            'email': f"user_{user_id}@example.com",
+                            'email': "cg387@duke.edu",
                             'is_active': True,
                             'is_staff': False,
                             'is_superuser': False,
@@ -510,7 +428,7 @@ class AmazonCommunication:
                     )
 
                 # create package
-                Package.objects.get_or_create(
+                package, created = Package.objects.get_or_create(
                     id=package_id,
                     defaults={
                         'user': user,
@@ -538,6 +456,7 @@ class AmazonCommunication:
                         user=user,
                         message=f"A new package {package_id} has been created for you"
                     )
+                    notification_manager.send_pickup_notification(package)
 
                 with self.message_lock:
                     self.processed_messages.add(message_id)
@@ -552,7 +471,8 @@ class AmazonCommunication:
             logger.error(f"Error handling request_pickup: {e}")
             return self._create_response('pickup_response', request.get('message_id', 'unknown'), 'error',
                                         message=f"Internal error: {str(e)}")
-        
+    
+    # 4.2
     def handle_package_ready(self, request):
         """
         Handle a package_ready message from Amazon.
@@ -615,10 +535,55 @@ class AmazonCommunication:
             logger.error(f"Error handling package_ready: {e}")
             return self._create_response('package_ready_response', request.get('message_id', 'unknown'), 'error', 
                                       message=f"Internal error: {str(e)}")
-    
-    def handle_load_package(self, request):
+
+    # 4.3 truck_arrived 
+    def _notify_truck_arrived(self, content):
         """
-        Handle a load_package message from Amazon.
+        Notify Amazon that a truck has arrived at a warehouse.
+
+        Args:
+            content: Dictionary with truck_id and warehouse_id
+        """
+
+        message = {
+            "action": "truck_arrived",
+            # "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            # "message_id": str(uuid.uuid4()),
+            "truck_id": content['truck_id'],
+            "warehouse_id": content['warehouse_id']
+        }
+
+        return message
+ 
+    def notify_truck_arrived(self, truck_id, warehouse_id):
+        """
+        Notify Amazon that a truck has arrived at a warehouse.
+        
+        Args:
+            truck_id: ID of the truck
+            warehouse_id: ID of the warehouse
+            
+        Returns:
+            bool: True if successfully queued, False otherwise
+        """
+        try:
+            AmazonMessage.objects.create(
+                message_type='truck_arrived',
+                message_content={
+                    'truck_id': truck_id,
+                    'warehouse_id': warehouse_id
+                },
+                status='pending'
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error queuing truck_arrived message: {e}")
+            return False
+    
+    # 5.1 loading_package 
+    def handle_loading_package(self, request):
+        """
+        Handle a loading_package message from Amazon.
         
         Args:
             request: The JSON request from Amazon
@@ -632,7 +597,7 @@ class AmazonCommunication:
                 if message_id in self.processed_messages:
                     logger.info(f"Duplicate message {message_id}, returning cached response")
                     return self._create_response(
-                        'load_package_response', message_id, 'success',
+                        'loading_package_response', message_id, 'success',
                         message="Load package request already processed"
                     )
 
@@ -643,13 +608,13 @@ class AmazonCommunication:
             package = Package.objects.select_related('user').filter(id=package_id).first()
             if not package:
                 return self._create_response(
-                    'load_package_response', message_id, 'error',
+                    'loading_package_response', message_id, 'error',
                     message=f"Package {package_id} not found"
                 )
 
             if package.status not in ['ready_for_pickup', 'pickup_assigned']:
                 return self._create_response(
-                    'load_package_response', message_id, 'error',
+                    'loading_package_response', message_id, 'error',
                     message=f"Package {package_id} is not ready for pickup (status: {package.status})"
                 )
 
@@ -657,13 +622,13 @@ class AmazonCommunication:
             truck = Truck.objects.filter(id=truck_id).first()
             if not truck:
                 return self._create_response(
-                    'load_package_response', message_id, 'error',
+                    'loading_package_response', message_id, 'error',
                     message=f"Truck {truck_id} not found"
                 )
 
             if truck.status != 'arrive_warehouse':
                 return self._create_response(
-                    'load_package_response', message_id, 'error',
+                    'loading_package_response', message_id, 'error',
                     message=f"Truck {truck_id} is not at warehouse (status: {truck.status})"
                 )
 
@@ -691,17 +656,18 @@ class AmazonCommunication:
             threading.Timer(2.0, self._complete_loading, args=[package_id, truck_id]).start()
 
             return self._create_response(
-                'load_package_response', message_id, 'success',
+                'loading_package_response', message_id, 'success',
                 message="Package loading initiated"
             )
 
         except Exception as e:
-            logger.error(f"Error handling load_package: {e}")
+            logger.error(f"Error handling loading_package: {e}")
             return self._create_response(
-                'load_package_response', request.get('message_id', 'unknown'), 'error',
+                'loading_package_response', request.get('message_id', 'unknown'), 'error',
                 message=f"Internal error: {str(e)}"
             )
 
+    # 7.1 
     def handle_query_status(self, request):
         """
         Handle a query_status request from Amazon.
@@ -763,7 +729,8 @@ class AmazonCommunication:
                 'error',
                 message=f"Internal error: {str(e)}"
             )
-        
+    
+    # 11. world id coordination
     def handle_world_created_response(self, request):
         """
         Handle a world_created_response message from Amazon.
@@ -862,8 +829,8 @@ class AmazonCommunication:
         """
         response = {
             "action": f"{action}",
-            "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            "message_id": str(uuid.uuid4()),
+            # "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            # "message_id": str(uuid.uuid4()),
             "in_response_to": in_response_to,
             "status": status
         }

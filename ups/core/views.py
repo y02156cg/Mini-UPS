@@ -21,6 +21,7 @@ import threading
 import os
 import random
 import string
+from notification_manager import notification_manager
 
 from core.models import *
 from django.utils.timezone import now
@@ -456,4 +457,283 @@ def world_control(request):
         'world_info': world_info
     }
     return render(request, 'core/world_control.html', context)
+
+@login_required
+def delivery_map(request):
+    warehouses = Warehouse.objects.all()
+
+    # Get active trucks
+    trucks = Truck.objects.exclude(status='error')
+    
+    # If user is authenticated, get their packages
+    packages = []
+    if request.user.is_authenticated:
+        packages = Package.objects.filter(
+            user=request.user,
+            status__in=['waiting_for_pickup', 'pickup_assigned', 'ready_for_pickup', 'loading', 'loaded', 'delivering']
+        ).select_related('truck')
+    
+    context = {
+        'warehouses': warehouses,
+        'trucks': trucks,
+        'packages': packages,
+        'is_authenticated': request.user.is_authenticated
+    }
+    return render(request, 'core/delivery_map.html', context)
+
+@login_required
+def map_data_api(request):
+    """API endpoint to get real-time map data"""
+    # Get warehouses
+    warehouses = list(Warehouse.objects.values('id', 'x', 'y'))
+    
+    # Get active trucks
+    trucks = list(Truck.objects.exclude(status='error').values('id', 'status', 'x', 'y'))
+    
+    # Get user's packages or all packages for admin
+    if request.user.is_staff:
+        package_query = Package.objects.exclude(status='delivered').select_related('truck')
+        packages = []
+        for package in package_query:
+            package_dict = {
+                'id': package.id,
+                'status': package.status,
+                'destination_x': package.destination_x,
+                'destination_y': package.destination_y,
+                'truck_id': package.truck.id if package.truck else None
+            }
+            if package.truck:
+                package_dict.update({
+                    'truck_status': package.truck.status,
+                    'truck_x': package.truck.x,
+                    'truck_y': package.truck.y
+                })
+            packages.append(package_dict)
+    else:
+        package_query = Package.objects.filter(
+            user=request.user
+        ).exclude(status='delivered').select_related('truck')
+        packages = []
+        for package in package_query:
+            package_dict = {
+                'id': package.id,
+                'status': package.status,
+                'destination_x': package.destination_x,
+                'destination_y': package.destination_y,
+                'truck_id': package.truck.id if package.truck else None
+            }
+            if package.truck:
+                package_dict.update({
+                    'truck_status': package.truck.status,
+                    'truck_x': package.truck.x,
+                    'truck_y': package.truck.y
+                })
+            packages.append(package_dict)
+    
+    return JsonResponse({
+        'warehouses': warehouses,
+        'trucks': trucks,
+        'packages': packages,
+        'timestamp': timezone.now().isoformat()
+    })
+
+@login_required
+def truck_status_api(request, truck_id):
+    """API endpoint to get truck status for AJAX updates"""
+    try:
+        truck = Truck.objects.get(id=truck_id)
+        return JsonResponse({
+            'status': 'success',
+            'truck': {
+                'id': truck.id,
+                'status': truck.status,
+                'x': truck.x,
+                'y': truck.y
+            }
+        })
+    except Truck.DoesNotExist:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Truck not found'
+        }, status=404)
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
+    
+@login_required
+def package_status_api(request, tracking_number):
+    """API endpoint to get package status for AJAX updates"""
+    try:
+        package = Package.objects.select_related('truck').get(id=tracking_number)
+        response_data = {
+            'status': 'success',
+            'package': {
+                'id': package.id,
+                'status': package.status,
+                'destination': {
+                    'x': package.destination_x,
+                    'y': package.destination_y
+                }
+            }
+        }
+        
+        if package.truck:
+            response_data['package']['truck'] = {
+                'id': package.truck.id,
+                'status': package.truck.status,
+                'x': package.truck.x,
+                'y': package.truck.y
+            }
+        
+        return JsonResponse(response_data)
+    except Package.DoesNotExist:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'Package not found'
+        }, status=404)
+    except Exception as e:
+        return JsonResponse({
+            'status': 'error',
+            'message': str(e)
+        }, status=500)
+
+
+@login_required
+def notification_settings(request):
+    """View for managing notification preferences"""
+    if request.method == 'POST':
+        # Update notification preferences
+        for notification_type in ['delivery', 'pickup', 'status_change', 'truck_arrival', 'system']:
+            enabled = request.POST.get(f'{notification_type}_enabled') == 'on'
+            
+            # Get threshold for delivery notifications
+            threshold_minutes = 30  # Default
+            if notification_type == 'delivery':
+                try:
+                    threshold_minutes = int(request.POST.get('delivery_threshold', 30))
+                except ValueError:
+                    threshold_minutes = 30
+            
+            # Update or create preference
+            notification_manager.register_notification_preference(
+                user=request.user, 
+                notification_type=notification_type,
+                enabled=enabled,
+                threshold_minutes=threshold_minutes
+            )
+        
+        # Update email
+        email = request.POST.get('email', request.user.email)
+        if email:
+            request.user.email = email
+            request.user.save(update_fields=['email'])
+        
+        messages.success(request, 'Notification preferences updated successfully')
+        return redirect('notification_settings')
+    
+    # Get current preferences
+    preferences = {}
+    for pref in NotificationPreference.objects.filter(user=request.user):
+        preferences[pref.notification_type] = {
+            'enabled': pref.enabled,
+            'threshold_minutes': pref.threshold_minutes
+        }
+    
+    # Recent notifications
+    recent_notifications = Notification.objects.filter(
+        user=request.user
+    ).order_by('-created_at')[:10]
+    
+    context = {
+        'preferences': preferences,
+        'email': request.user.email,
+        'recent_notifications': recent_notifications
+    }
+    
+    return render(request, 'core/notification_settings.html', context)
+
+@login_required
+def get_notifications(request):
+    """API endpoint to get user's recent notifications"""
+    # Mark all as read if requested
+    mark_read = request.GET.get('mark_read') == 'true'
+    
+    # Get unread notifications first, then most recent read ones
+    notifications = list(Notification.objects.filter(
+        user=request.user,
+        read=False
+    ).order_by('-created_at').values('id', 'message', 'created_at', 'read'))
+    
+    # If we need more to reach 10, get some read ones too
+    if len(notifications) < 10:
+        read_notifications = list(Notification.objects.filter(
+            user=request.user,
+            read=True
+        ).order_by('-created_at').values('id', 'message', 'created_at', 'read')[:10-len(notifications)])
+        
+        notifications.extend(read_notifications)
+    
+    # Convert datetime to string
+    for notification in notifications:
+        notification['created_at'] = notification['created_at'].isoformat()
+    
+    # Mark as read if requested
+    if mark_read and notifications:
+        unread_ids = [n['id'] for n in notifications if not n['read']]
+        if unread_ids:
+            Notification.objects.filter(id__in=unread_ids).update(read=True)
+            # Update the response to show they're now read
+            for notification in notifications:
+                if notification['id'] in unread_ids:
+                    notification['read'] = True
+    
+    return JsonResponse({
+        'notifications': notifications,
+        'unread_count': Notification.objects.filter(user=request.user, read=False).count()
+    })
+
+
+@login_required
+def test_notification(request):
+    """Send a test notification to the user"""
+    if request.method == 'POST':
+        notification_type = request.POST.get('notification_type', 'system')
+        try:
+            # Create a test notification
+            message = f"This is a test {notification_type} notification. Sent at {timezone.now().strftime('%H:%M:%S')}."
+            
+            # Create in database
+            Notification.objects.create(
+                user=request.user,
+                message=message
+            )
+            
+            # Send email
+            if request.user.email:
+                from django.core.mail import send_mail
+                from django.conf import settings
+                
+                send_mail(
+                    f"Test {notification_type.title()} Notification",
+                    message,
+                    settings.DEFAULT_FROM_EMAIL,
+                    [request.user.email],
+                    fail_silently=True
+                )
+                
+                messages.success(request, f"Test notification sent to {request.user.email}")
+            else:
+                messages.warning(request, "No email address set. Notification saved to system only.")
+
+            
+                
+            return redirect('notification_settings')
+        
+        except Exception as e:
+            messages.error(request, f"Error sending test notification: {str(e)}")
+            return redirect('notification_settings')
+    
+    return redirect('notification_settings')
 

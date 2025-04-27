@@ -13,6 +13,7 @@ import sys
 import world_ups_1_pb2 as ups_pb2
 from core.models import *
 from django.db import transaction
+from notification_manager import notification_manager
 
 
 # Configure logging
@@ -476,59 +477,75 @@ class WorldConnection:
             with transaction.atomic():
                 # Update Truck status and location
                 Truck.objects.filter(id=completion.truckid).update(
-                    status=completion.status,
+                    status=completion.status.lower(),
                     x=completion.x,
                     y=completion.y,
                     updated_at=timezone.now()
                 )
 
-                if completion.status == "arrive warehouse":
+                pkg = Package.objects.filter(
+                    truck_id=completion.truckid,
+                    status="ready_for_pickup"
+                ).first()
+
+                if pkg:
+                    warehouse_id = pkg.warehouse_id
+
+                # Update warehouse information
+                Warehouse.objects.filter(id=warehouse_id).update(
+                    x=completion.x,
+                    y=completion.y
+                )
+
+                if completion.status == "ARRIVE WAREHOUSE":
+                    logger.debug("into handle_completion arrive warehouse")
                     # Find warehouse at truck location
-                    warehouse = Warehouse.objects.filter(
-                        x=completion.x, y=completion.y
-                    ).first()
+                    # warehouse = Warehouse.objects.filter(
+                    #     x=completion.x, y=completion.y
+                    # ).first()
 
-                    if warehouse:
-                        # Find packages waiting at this warehouse assigned to this truck
-                        packages = Package.objects.filter(
-                            warehouse_id=warehouse.id,
-                            truck_id=completion.truckid,
-                            status="ready_for_pickup"
-                        )
+                    # if warehouse:
+                    # Find packages waiting at this warehouse assigned to this truck
+                    packages = Package.objects.filter(
+                        truck_id=completion.truckid,
+                        status="ready_for_pickup"
+                    )
 
-                        # Notify Amazon
-                        if self.amazon_communication:
-                            self.amazon_communication.notify_truck_arrived(
-                                completion.truckid, warehouse.id
-                            )
-                        else:
-                            AmazonMessage.objects.create(
-                                message_type='truck_arrived',
-                                message_content={
-                                    'truck_id': completion.truckid,
-                                    'warehouse_id': warehouse.id
-                                },
-                                status='pending',
-                                created_at=timezone.now()
-                            )
+                    # Notify Amazon
+                    # if self.amazon_communication:
+                    #     self.amazon_communication.notify_truck_arrived(
+                    #         completion.truckid, warehouse.id
+                    #     )
+                    # else:
+                    AmazonMessage.objects.create(
+                        message_type='truck_arrived',
+                        message_content={
+                            'truck_id': completion.truckid,
+                            'warehouse_id': warehouse_id
+                        },
+                        status='pending',
+                        created_at=timezone.now()
+                    )
 
-                        if packages.exists():
-                            # Notify users about truck arrival
-                            for package in packages:
-                                package.status = 'pickup_complete'
-                                package.updated_at = timezone.now()
-                                package.save()
+                    if packages.exists():
+                        logger.debug("exist package in arriving warehouse")
+                        # Notify users about truck arrival
+                        for package in packages:
+                            package.status = 'pickup_complete'
+                            package.updated_at = timezone.now()
+                            package.save()
 
-                                if package.user_id:
-                                    Notification.objects.create(
-                                        user_id=package.user_id,
-                                        message=f"Truck {completion.truckid} has arrived at the warehouse for your package {package.id}",
-                                        created_at=timezone.now()
-                                    )
-                    else:
-                        logger.warning(f"No warehouse found at location ({completion.x}, {completion.y})")
+                            if package.user_id:
+                                Notification.objects.create(
+                                    user_id=package.user_id,
+                                    message=f"Truck {completion.truckid} has arrived at the warehouse for your package {package.id}",
+                                    created_at=timezone.now()
+                                )
+                                notification_manager.send_truck_arrival(package, warehouse_id)
+                    # else:
+                    #     logger.warning(f"No warehouse found at location ({completion.x}, {completion.y})")
 
-                elif completion.status == "idle":
+                elif completion.status == "IDLE":
                     # Truck finished deliveries
                     delivering_packages = Package.objects.filter(
                         truck_id=completion.truckid,
@@ -549,6 +566,7 @@ class WorldConnection:
                                 message=f"Your package {pkg.id} has been delivered",
                                 created_at=timezone.now()
                             )
+                            notification_manager.send_delivery_notification(pkg)
 
                         # Notify Amazon
                         if self.amazon_communication:
@@ -558,6 +576,7 @@ class WorldConnection:
                                 completion.x,
                                 completion.y
                             )
+                            
 
                     # # Try to assign new pending pickup to this truck
                     # pending_pickup = Package.objects.filter(
@@ -579,6 +598,8 @@ class WorldConnection:
                     #     # Important: send pickup command
                     #     self.send_pickup(completion.truckid, pending_pickup.warehouse_id)
 
+                else: 
+                    logger.debug("status not valid")
         except Exception as e:
             logger.error(f"Error handling completion: {e}")
     
@@ -709,29 +730,6 @@ class WorldConnection:
                         truck_id=status.truckid,
                         status='delivering'
                     )
-                    
-                    # Fetch simulation speed
-                    world_state = WorldState.objects.filter(world_id=self.world_id).first()
-                    sim_speed = world_state.sim_speed if world_state else 100  # Default to 100
-                    
-                    for pkg in delivering_packages:
-                        distance = ((pkg.destination_x - status.x) ** 2 + (pkg.destination_y - status.y) ** 2) ** 0.5
-                        if sim_speed > 0:
-                            eta_minutes = int(distance / (sim_speed / 100.0))
-                        else:
-                            eta_minutes = 0
-                        
-                        pkg.estimated_delivery = timezone.now() + timezone.timedelta(minutes=eta_minutes)
-                        pkg.updated_at = timezone.now()
-                        pkg.save()
-                        
-                        # Send notification to user
-                        if pkg.user_id:
-                            Notification.objects.create(
-                                user_id=pkg.user_id,
-                                message=f"Your package {pkg.id} is en route! Estimated delivery in {eta_minutes} minutes.",
-                                created_at=timezone.now()
-                            )
         
         except Exception as e:
             logger.error(f"Error handling truck status: {e}")

@@ -1,10 +1,12 @@
 # Create your models here.
 from django.db import models
 from django.conf import settings
+from django.contrib.auth.models import User
+
 
 class Truck(models.Model):
     id = models.IntegerField(primary_key=True)
-    status = models.CharField(max_length=20, default='idle')
+    status = models.CharField(max_length=20, default='idle') 
     x = models.IntegerField(default=0)
     y = models.IntegerField(default=0)
     world_id = models.BigIntegerField()
@@ -15,8 +17,8 @@ class Truck(models.Model):
 
 class Warehouse(models.Model):
     id = models.IntegerField(primary_key=True)
-    x = models.IntegerField()
-    y = models.IntegerField()
+    x = models.IntegerField(null=True)
+    y = models.IntegerField(null=True)
     world_id = models.BigIntegerField()
 
     class Meta:
@@ -129,3 +131,24 @@ class CommandLog(models.Model): # request from amazon
 
     class Meta:
         db_table = 'command_logs'
+
+class NotificationPreference(models.Model):
+    """User preferences for notifications"""
+    NOTIFICATION_TYPES = [
+        ('delivery', 'Delivery Notifications'),
+        ('pickup', 'Pickup Updates'),
+        ('truck_arrival', 'Truck Arrival'),
+        ('system', 'System Notifications'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notification_preferences')
+    notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
+    enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = ['user', 'notification_type']
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.notification_type}"

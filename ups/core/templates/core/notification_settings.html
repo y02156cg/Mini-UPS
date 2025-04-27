@@ -1,0 +1,69 @@
+{% extends "core/base.html" %}
+
+{% block title %}Notification Settings{% endblock %}
+
+{% block content %}
+<h1>Notification Settings</h1>
+
+<p><a href="{% url 'dashboard' %}">Back to Dashboard</a> | <a href="{% url 'home' %}">Home</a></p>
+
+<form method="post">
+    {% csrf_token %}
+    <h2>Email Preferences</h2>
+    <p>
+        <label for="email">Email address:</label>
+        <input type="email" id="email" name="email" value="{{ email }}" required>
+    </p>
+    
+    <h2>Notification Types</h2>
+    <p>Select which notifications you want to receive:</p>
+    
+    <p>
+        <input type="checkbox" id="delivery_enabled" name="delivery_enabled" {% if preferences.delivery.enabled %}checked{% endif %}>
+        <label for="delivery_enabled"><strong>Delivery Notifications</strong> - Get notified when your package is delivered</label>
+    </p>
+    
+    <p>
+        <input type="checkbox" id="pickup_enabled" name="pickup_enabled" {% if preferences.pickup.enabled %}checked{% endif %}>
+        <label for="pickup_enabled"><strong>Pickup Updates</strong> - Get notified when your package is ready for pickup</label>
+    </p>
+    
+    <p>
+        <input type="checkbox" id="truck_arrival_enabled" name="truck_arrival_enabled" {% if preferences.truck_arrival.enabled %}checked{% endif %}>
+        <label for="truck_arrival_enabled"><strong>Truck Arrival</strong> - Get notified when a truck arrives at the warehouse for pickup</label>
+    </p>
+    
+    <p>
+        <input type="checkbox" id="system_enabled" name="system_enabled" {% if preferences.system.enabled %}checked{% endif %}>
+        <label for="system_enabled"><strong>System Notifications</strong> - Get notified about important system updates</label>
+    </p>
+    
+    <p>
+        <input type="submit" value="Save Preferences">
+    </p>
+</form>
+
+<form method="post" action="{% url 'test_notification' %}">
+    {% csrf_token %}
+    <input type="hidden" name="notification_type" value="test">
+    <p>
+        <input type="submit" value="Send Test Notification">
+    </p>
+</form>
+
+<h2>Recent Notifications</h2>
+{% if recent_notifications %}
+    <ul>
+        {% for notification in recent_notifications %}
+            <li>
+                {% if not notification.read %}<strong>{% endif %}
+                {{ notification.message }}
+                {% if not notification.read %}</strong>{% endif %}
+                <small>({{ notification.created_at|date:"M d, Y H:i" }})</small>
+            </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p>No notifications yet.</p>
+{% endif %}
+{% endblock %}
